@@ -145,13 +145,13 @@ for (const file of frontend) {
   checked++;
 }
 
-// The service-role key must never be READ outside api/_lib/db.js. Naming it in
+// The service-role key must never be READ outside server/_lib/db.js. Naming it in
 // a comment (setup docs) is fine; only process.env access is a problem.
 for (const file of files.filter(f => f.endsWith(".js"))) {
   const r = rel(file);
-  if (r === "api/_lib/db.js" || r === "api/_lib/config-check.js" || r.startsWith("test/")) continue;
+  if (r === "server/_lib/db.js" || r === "server/_lib/config-check.js" || r.startsWith("test/")) continue;
   if (/process\.env\.SUPABASE_SERVICE_ROLE_KEY/.test(fs.readFileSync(file, "utf8"))) {
-    fail(r, "reads process.env.SUPABASE_SERVICE_ROLE_KEY — it must only be read in api/_lib/db.js");
+    fail(r, "reads process.env.SUPABASE_SERVICE_ROLE_KEY — it must only be read in server/_lib/db.js");
   }
 }
 

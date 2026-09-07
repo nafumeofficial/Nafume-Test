@@ -116,7 +116,10 @@ curl -s https://YOUR-DOMAIN/api/health -H "Authorization: Bearer $ADMIN_API_TOKE
 │       ├── tracking-service.js
 │       └── operations-service.js
 │
-├── api/                        ← Vercel serverless functions (CommonJS, no deps)
+├── api/
+│   └── index.js                ← One Vercel Function; routes every /api/* URL
+│
+├── server/                     ← Server-only handlers and shared code
 │   ├── health.js               ← Liveness + config report (token for detail)
 │   ├── _lib/                   ← Shared: db, http, validate, auth, catalog,
 │   │                             discounts, repo, messaging, review-access,
@@ -232,6 +235,7 @@ robots.txt
 sitemap.xml
 vercel.json
 api/
+server/
 pages/
 admin/
 assets/
@@ -276,7 +280,7 @@ db/            ← run schema.sql by hand in Supabase; do not serve it
 ### Pricing is defined in two places on purpose
 
 `js/commerce/config.js` drives what the browser *displays*.
-`api/_lib/catalog.js` decides what the customer is actually *charged*.
+`server/_lib/catalog.js` decides what the customer is actually *charged*.
 
 The server recomputes every total from its own catalogue and rejects any order
 whose client-side total disagrees — so a tampered frontend can never produce a

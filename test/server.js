@@ -1,10 +1,9 @@
 /*
  * test/server.js  —  local runner for the /api serverless functions
  * ============================================================================
- * Vercel gives each file in /api an (req, res) handler with Express-ish helpers
- * (res.status().json()). This script recreates just enough of that contract to
- * run and test the same handler files locally with plain Node — no packages,
- * no Vercel CLI.
+ * Vercel sends every /api route through api/index.js, which dispatches to
+ * handlers in /server. This script recreates the function contract locally
+ * with plain Node — no packages and no Vercel CLI.
  *
  *   node test/server.js            → http://localhost:3100
  *   node test/run-tests.js         → starts this in-process and runs the suite
@@ -21,7 +20,7 @@ const fs       = require("fs");
 const path     = require("path");
 
 const ROOT     = path.resolve(__dirname, "..");
-const API_ROOT = path.join(ROOT, "api");
+const API_ROOT = path.join(ROOT, "server");
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -61,7 +60,7 @@ function decorate(res) {
 
 /* ── API routing ─────────────────────────────────────────────────────────── */
 
-/* Maps /api/razorpay/create-order → api/razorpay/create-order.js
+/* Maps /api/razorpay/create-order → server/razorpay/create-order.js
    Files starting with "_" are libraries, never routes. */
 function resolveApiFile(pathname) {
   const rel = pathname.replace(/^\/api\/?/, "").replace(/\.js$/, "");
@@ -165,6 +164,6 @@ if (require.main === module) {
   const port = parseInt(process.env.PORT || "3100", 10);
   start(port).then(function (s) {
     console.log("NAFUME local server → " + s.url);
-    console.log("  DB driver: " + require("../api/_lib/db").driverName());
+    console.log("  DB driver: " + require("../server/_lib/db").driverName());
   });
 }

@@ -23,7 +23,7 @@ Compared the two-page `ref/NAFUME_Customer_Data_Collection_Plan (2).pdf` against
 
 ### 1. Verify ownership before claiming guest customer records — highest priority
 
-In [api/account/register.js](api/account/register.js), registration looks up an existing customer by email, then phone, through [api/_lib/repo.js](api/_lib/repo.js). If that customer has no password account, the endpoint installs the submitted password and issues a session without OTP, email verification or a verified order-claim credential.
+In [server/account/register.js](server/account/register.js), registration looks up an existing customer by email, then phone, through [server/_lib/repo.js](server/_lib/repo.js). If that customer has no password account, the endpoint installs the submitted password and issues a session without OTP, email verification or a verified order-claim credential.
 
 **Local confirmation:** created a synthetic guest checkout, then registered with its email and a different phone number. Registration returned HTTP 200; the resulting session could see the guest's previous order through `/api/account/me`.
 
@@ -31,7 +31,7 @@ Required result: prove control of the relevant email/phone before attaching cred
 
 ### 2. Keep payment state accurate when capture is not confirmed
 
-[api/razorpay/verify-payment.js](api/razorpay/verify-payment.js) accepts both `captured` and `authorized`, and continues to `markOrderPaid` if its independent payment fetch fails. Amount comparison also depends on that fetch succeeding. The existing API suite explicitly accepts the fetch-failure-to-paid behavior.
+[server/razorpay/verify-payment.js](server/razorpay/verify-payment.js) accepts both `captured` and `authorized`, and continues to `markOrderPaid` if its independent payment fetch fails. Amount comparison also depends on that fetch succeeding. The existing API suite explicitly accepts the fetch-failure-to-paid behavior.
 
 Required result: retain an awaiting-verification state when capture cannot be confirmed, and let the existing webhook/reconciliation paths resolve it. Preserve a clear customer message about checking payment so the customer is not encouraged to pay twice. Razorpay distinguishes authorization from capture and moves an order to paid after successful capture. See [Razorpay's Orders documentation](https://razorpay.com/docs/payments/orders/?preferred-country=US) and [Standard Checkout integration](https://razorpay.com/docs/payments/payment-gateway/web-integration/standard/integration-steps/).
 
@@ -39,7 +39,7 @@ This is a code-path finding; no real payment was made during this audit.
 
 ### 3. Require delivery before accepting a post-delivery review/reward
 
-[api/_lib/review-access.js](api/_lib/review-access.js) checks payment and previous reviews, but only returns delivery as information. [api/reviews/submit.js](api/reviews/submit.js) does not enforce delivery before insertion or reward issuance.
+[server/_lib/review-access.js](server/_lib/review-access.js) checks payment and previous reviews, but only returns delivery as information. [server/reviews/submit.js](server/reviews/submit.js) does not enforce delivery before insertion or reward issuance.
 
 **Local confirmation:** a synthetic paid order with `delivered_at = null` successfully submitted a review and received `NAFUMEREVIEW`.
 

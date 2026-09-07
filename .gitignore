@@ -1,5 +1,6 @@
 _archive/
 _backup*/
+assets/videos/_originals_backup/
 .DS_Store
 Thumbs.db
 node_modules/

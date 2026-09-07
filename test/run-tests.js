@@ -3,7 +3,7 @@
  * ============================================================================
  *   node test/run-tests.js
  *
- * Runs the REAL handler files from /api against the memory storage driver, with
+ * Runs the real handlers from /server against the memory storage driver, with
  * only the external HTTP boundary (Razorpay, Resend) replaced by test/mocks.js.
  * Razorpay signatures are computed with the same HMAC scheme and the same secret
  * the handlers read, so signature verification, tampering and replay are
@@ -27,11 +27,11 @@ const mocks = require("./mocks");
 mocks.install();
 
 const { start }   = require("./server");
-const db          = require("../api/_lib/db");
-const catalog     = require("../api/_lib/catalog");
-const discounts   = require("../api/_lib/discounts");
-const messagingLib = require("../api/_lib/messaging");
-const repoLib     = require("../api/_lib/repo");
+const db          = require("../server/_lib/db");
+const catalog     = require("../server/_lib/catalog");
+const discounts   = require("../server/_lib/discounts");
+const messagingLib = require("../server/_lib/messaging");
+const repoLib     = require("../server/_lib/repo");
 
 let r0;   // shared scratch for suites that probe an endpoint before authorising
 

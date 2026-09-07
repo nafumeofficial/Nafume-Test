@@ -45,9 +45,9 @@ const fs   = require("fs");
   console.log("Loaded .env");
 })();
 
-const db          = require("../api/_lib/db");
-const configCheck = require("../api/_lib/config-check");
-const catalog     = require("../api/_lib/catalog");
+const db          = require("../server/_lib/db");
+const configCheck = require("../server/_lib/config-check");
+const catalog     = require("../server/_lib/catalog");
 
 const args      = process.argv.slice(2);
 const KEEP      = args.indexOf("--keep") !== -1;
@@ -335,7 +335,7 @@ async function checkResend() {
     return;
   }
 
-  const messaging = require("../api/_lib/messaging");
+  const messaging = require("../server/_lib/messaging");
   const result = await messaging.send({
     channel: "email", to: TEST_EMAIL,
     subject: "NAFUME live-service check",
@@ -356,7 +356,7 @@ function checkPricing() {
   const priced = catalog.priceCart([{ id: "seduction", qty: 1 }]);
   const totals = catalog.calculateTotals(priced.subtotal, priced.totalQty, false, { prepaid: true });
   ok("single-item total is ₹858 (799 − 5% prepaid + 99 shipping)", totals.total === 858,
-     "got " + totals.total + " — check that api/_lib/catalog.js and js/commerce/config.js agree");
+     "got " + totals.total + " — check that server/_lib/catalog.js and js/commerce/config.js agree");
 
   const withPromo = catalog.calculateTotals(priced.subtotal, priced.totalQty, false, {
     prepaid: true, discount: { code: "NAFUME10", type: "percentage", value: 10 }
