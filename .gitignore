@@ -7,7 +7,13 @@ dist/
 build/
 .env
 .env.local
+.env.*.local
 *.log
+
+# Local-only data written by the memory storage driver (NAFUME_DB_FILE).
+# Never commit this — it contains real customer data if you point it at one.
+nafume-db.json
+test/.data/
 *.zip
 .claude/
 .vercel/

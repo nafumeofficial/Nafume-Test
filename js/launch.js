@@ -1415,10 +1415,55 @@ function escapeHtml(s) {
   });
 }
 
+/* refreshPdpRatingRow(productId)
+   Updates the star row at the top of a product page in place once server
+   reviews arrive. Re-rendering the whole PDP would reset the gallery and any
+   selection the customer had already made, so only this one element changes. */
+function refreshPdpRatingRow(productId) {
+  if (!window.ReviewService) return;
+  var summary = window.ReviewService.getReviewSummary(productId);
+  if (!summary || !summary.hasReviews || !summary.count) return;
+
+  var html =
+    '<span class="pdp-rating-stars">' + starRow(summary.average, 'rv-stars') + '</span>' +
+    '<span class="pdp-rating-num">' + summary.average.toFixed(1) + '</span>' +
+    '<span class="pdp-rating-count">' + summary.count +
+      (summary.count === 1 ? ' review' : ' reviews') + '</span>';
+
+  var row = document.querySelector(".pdp-rating-row");
+  if (row) {
+    row.innerHTML = html;
+    row.setAttribute("aria-label",
+      "Rated " + summary.average + " out of 5 from " + summary.count + " reviews");
+    return;
+  }
+
+  // No row was rendered because there were no reviews at page load — insert one.
+  var eyebrow = document.querySelector(".pdp-eyebrow");
+  if (!eyebrow || !eyebrow.parentNode) return;
+  row = document.createElement("div");
+  row.className = "pdp-rating-row";
+  row.setAttribute("aria-label",
+    "Rated " + summary.average + " out of 5 from " + summary.count + " reviews");
+  row.innerHTML = html;
+  eyebrow.parentNode.insertBefore(row, eyebrow.nextSibling);
+}
+
 function renderProductReviews(productId) {
   if (!window.ReviewService) return;
   var pdpRoot = document.getElementById("pdp-root");
   if (!pdpRoot) return;
+
+  /* Pull published reviews from the database and re-render when they arrive.
+     Rendering is never blocked on the request: the page shows what it already
+     has, then improves. hydrateProduct() de-duplicates in-flight calls, so the
+     re-render it triggers cannot loop. */
+  if (typeof window.ReviewService.hydrateProduct === "function") {
+    window.ReviewService.hydrateProduct(productId, function () {
+      renderProductReviews(productId);
+      refreshPdpRatingRow(productId);
+    });
+  }
 
   // Container (insert once, right after the PDP layout)
   var section = document.getElementById("pdp-reviews");
@@ -1666,6 +1711,15 @@ function renderOrderSummary() {
     try { s = window.Offers.getCartOfferSummary(launchCart, payment); } catch (e) { s = null; }
   }
   if (s) { sub = s.subtotal; ship = s.shipping; total = s.total; }
+
+  // An applied promo code is priced by the SERVER; use the totals it returned
+  // rather than recomputing them here, so the page can never show a discount
+  // the server would not honour.
+  if (nfAppliedPromo && nfAppliedPromo.totals) {
+    total = nfAppliedPromo.totals.total;
+    ship  = nfAppliedPromo.totals.shipping;
+    sub   = nfAppliedPromo.totals.subtotal;
+  }
   var freeSh = ship === 0 && sub > 0;
 
   if (subtotEl) subtotEl.textContent = curr + sub.toLocaleString("en-IN");
@@ -1687,20 +1741,32 @@ function renderCheckoutOfferRows(s) {
   if (!totalsBox) return;
   // Remove previously injected offer rows.
   totalsBox.querySelectorAll(".order-row-offer").forEach(function (el) { el.remove(); });
-  if (!s || !s.appliedOffers || !s.appliedOffers.length) return;
 
   var curr = LAUNCH_CONFIG.currency;
   var totalRow = totalsBox.querySelector(".order-row-total");
-  s.appliedOffers.forEach(function (o) {
+
+  function addRow(label, amount, isDiscount) {
     var row = document.createElement("div");
     row.className = "order-row order-row-offer";
-    var isDiscount = o.amount < 0;
-    var amt = (isDiscount ? "−" : "+") + curr + Math.abs(o.amount).toLocaleString("en-IN");
-    row.innerHTML = '<span class="order-offer-label">' + o.label + '</span>' +
-      '<span class="' + (isDiscount ? "order-free" : "") + '">' + amt + '</span>';
+    var amt = (isDiscount ? "−" : "+") + curr + Math.abs(amount).toLocaleString("en-IN");
+    row.innerHTML = '<span class="order-offer-label"></span><span class="' +
+      (isDiscount ? "order-free" : "") + '"></span>';
+    // textContent, not innerHTML: an offer label can contain a customer-typed
+    // promo code, and it must never be parsed as markup.
+    row.children[0].textContent = label;
+    row.children[1].textContent = amt;
     if (totalRow) totalsBox.insertBefore(row, totalRow);
     else totalsBox.appendChild(row);
-  });
+  }
+
+  if (s && s.appliedOffers && s.appliedOffers.length) {
+    s.appliedOffers.forEach(function (o) { addRow(o.label, o.amount, o.amount < 0); });
+  }
+
+  // Server-priced promo code, shown as its own line.
+  if (nfAppliedPromo && nfAppliedPromo.discount > 0) {
+    addRow("Promo code " + nfAppliedPromo.code, nfAppliedPromo.discount, true);
+  }
 }
 
 // Free-shipping progress + sample eligibility note above the totals.
@@ -1768,11 +1834,11 @@ function renderPrepaidNote() {
   if (isPrepaid) {
     note.className = "prepaid-discount-note prepaid-on";
     note.innerHTML = '<span class="material-symbols-outlined">verified</span> Extra ' + cfg.value +
-      '% prepaid discount applied. We\'ll share payment details on WhatsApp.';
+      '% prepaid discount applied — already included in your total below.';
   } else {
     note.className = "prepaid-discount-note";
-    note.innerHTML = '<span class="material-symbols-outlined">savings</span> Choose Prepaid to get an extra ' +
-      cfg.value + '% off.';
+    note.innerHTML = '<span class="material-symbols-outlined">savings</span> Pay online to get an extra ' +
+      cfg.value + '% off this order.';
   }
   note.style.display = "flex";
 }
@@ -1805,150 +1871,448 @@ function injectGiftPackagingToggle() {
   });
 }
 
-// ─── Shipping page: generate WhatsApp message and open ─────────────
-function submitShippingForm(event) {
-  event.preventDefault();
-  var form = document.getElementById("shipping-form");
+/* ═══════════════════════════════════════════════════════════════════════════
+   CHECKOUT  —  real orders, saved on the server
+   ───────────────────────────────────────────────────────────────────────────
+   The order is created by the BACKEND, not by opening WhatsApp:
 
-  if (launchCart.length === 0) {
-    alert("Your cart is empty. Please add products before placing an order.");
-    return;
-  }
+     Pay Online →  POST /api/razorpay/create-order   (validates + prices + saves
+                                                      a pending order)
+                → Razorpay Checkout
+                → POST /api/razorpay/verify-payment  (verifies the signature and
+                                                      the payment with Razorpay,
+                                                      then marks the order paid)
 
-  // Collect form values
-  var name    = (form.querySelector('[name="name"]').value    || "").trim();
-  var phone   = (form.querySelector('[name="phone"]').value   || "").trim();
-  var email   = (form.querySelector('[name="email"]').value   || "").trim();
-  var addr1   = (form.querySelector('[name="addr1"]').value   || "").trim();
-  var addr2   = (form.querySelector('[name="addr2"]').value   || "").trim();
-  var city    = (form.querySelector('[name="city"]').value    || "").trim();
-  var state   = (form.querySelector('[name="state"]').value   || "").trim();
-  var pin     = (form.querySelector('[name="pin"]').value     || "").trim();
-  var payOpts = form.querySelectorAll('[name="payment"]');
-  var payment = "Not specified";
-  payOpts.forEach(function(opt) { if (opt.checked) payment = opt.value; });
+     Cash on Delivery →  POST /api/orders/create-cod (validates + prices + saves
+                                                      a confirmed COD order)
 
-  // Validation
-  if (!name || !phone || !addr1 || !city || !pin) {
-    alert("Please fill in all required fields (Name, Phone, Address, City, PIN).");
-    return;
-  }
+   WhatsApp is still offered AFTER the order exists, as a courtesy confirmation
+   and for support — it is no longer where an order is created.
 
-  var curr    = LAUNCH_CONFIG.currency;
-  var orderId = "NF-" + Date.now().toString().slice(-6) + "-" + Math.floor(100 + Math.random() * 900);
+   Nothing here is trusted for money: the amount sent is only ever compared
+   against the server's own recomputed total, and a mismatch blocks the payment.
+   ═══════════════════════════════════════════════════════════════════════════ */
 
-  // ── Offer-aware totals (Upgrade 9) ──
-  var sub = launchSubtotal(), ship = launchShipping(), total = launchTotal();
-  var appliedOffers = [], offerSummary = null;
-  if (window.Offers) {
-    try {
-      offerSummary = window.Offers.getCartOfferSummary(launchCart, payment);
-      sub   = offerSummary.subtotal;
-      ship  = offerSummary.shipping;
-      total = offerSummary.total;
-      appliedOffers = offerSummary.appliedOffers || [];
-    } catch (e) { offerSummary = null; }
-  }
-  var freeSh = ship === 0;
+/* ── checkout status + busy states ─────────────────────────────────────────
+   Every path through checkout ends in a visible state. A customer must never
+   be left looking at a spinner that stopped or a button that does nothing.  */
 
-  var itemLines = launchCart.map(function(item, i) {
-    return (i + 1) + ". " + item.name + " x " + item.qty + " = " + curr + (item.price * item.qty).toLocaleString("en-IN");
-  }).join("\n");
+function checkoutStatusEl() {
+  var note = document.getElementById("checkout-status-note");
+  if (note) return note;
+  var actions = document.querySelector(".form-actions");
+  if (!actions) return null;
+  note = document.createElement("p");
+  note.id = "checkout-status-note";
+  note.className = "checkout-status-note";
+  note.setAttribute("role", "status");
+  note.setAttribute("aria-live", "polite");
+  actions.insertBefore(note, actions.firstChild);
+  return note;
+}
 
-  // Offer lines for the WhatsApp message.
-  var offerLines = appliedOffers.map(function (o) {
-    var sign = o.amount < 0 ? "−" : "+";
-    return "• " + o.label + ": " + sign + curr + Math.abs(o.amount).toLocaleString("en-IN");
-  }).join("\n");
-  var sampleNote = (offerSummary && offerSummary.tryMeSample && offerSummary.tryMeSample.eligible)
-    ? "\n🎁 Eligible for a free try-me sample." : "";
+/* kind: "error" | "info" | "success" */
+function showCheckoutStatus(message, kind) {
+  var note = checkoutStatusEl();
+  if (!note) { if (kind === "error") alert(message); return; }
+  note.textContent = message;
+  note.className = "checkout-status-note is-" + (kind || "info");
+  note.style.display = "flex";
+  try { note.scrollIntoView({ behavior: "smooth", block: "nearest" }); } catch (e) {}
+}
+function clearCheckoutStatus() {
+  var note = document.getElementById("checkout-status-note");
+  if (note) { note.style.display = "none"; note.textContent = ""; }
+}
 
-  var address = addr1 + (addr2 ? ", " + addr2 : "") + "\n" + city + ", " + state + " - " + pin;
-
-  var msg =
-    "Hello NAFUME! I'd like to place an order.\n\n" +
-    "Order ID: " + orderId + "\n\n" +
-    "─── Customer Details ───\n" +
-    "Name: " + name + "\n" +
-    "Phone: " + phone + "\n" +
-    "Email: " + (email || "—") + "\n\n" +
-    "─── Delivery Address ───\n" + address + "\n\n" +
-    "─── Order Items ───\n" + itemLines + "\n\n" +
-    "Subtotal: " + curr + sub.toLocaleString("en-IN") + "\n" +
-    (offerLines ? "─── Offers ───\n" + offerLines + "\n" : "") +
-    "Shipping: " + (freeSh ? "FREE (above " + curr + LAUNCH_CONFIG.freeShippingThreshold + ")" : curr + ship) + "\n" +
-    "Total: " + curr + total.toLocaleString("en-IN") + sampleNote + "\n\n" +
-    "Payment Preference: " + payment + "\n\n" +
-    "Please confirm availability and share payment details. Thank you!";
-
-  // ── Persist a structured order BEFORE clearing the cart (Upgrade 1) ──
-  // The commerce service snapshots the current cart + totals into the new order
-  // schema (key: nafume_orders_v2) so confirmation.html / track-order.html can
-  // read it later. Falls back silently if the service isn't loaded.
-  var createdOrder = null;
-  if (window.Commerce && typeof window.Commerce.createLocalOrder === "function") {
-    try {
-      var notesEl = form.querySelector('[name="notes"]');
-      // Upgrade 3: if a local account is logged in, stamp the order with its id.
-      var acctCust = (window.CustomerService && window.CustomerService.getCurrentCustomer)
-        ? window.CustomerService.getCurrentCustomer() : null;
-      createdOrder = window.Commerce.createLocalOrder({
-        orderId: orderId,
-        customer: {
-          name: name, phone: phone, email: email,
-          address: addr1 + (addr2 ? ", " + addr2 : ""),
-          city: city, state: state, pincode: pin
-        },
-        customerId: acctCust ? acctCust.customerId : null,
-        customerSnapshot: { name: name, phone: phone, email: email },
-        paymentMethod: payment,
-        offers: appliedOffers,   // Upgrade 9: [{ offerId, label, amount, type }]
-        notes: notesEl ? (notesEl.value || "").trim() : "",
-        whatsappMessage: msg
-      });
-      // Save the typed details back onto the profile for faster repeat orders.
-      if (acctCust && window.CustomerService.saveCheckoutDetailsFromCustomer) {
-        try {
-          window.CustomerService.saveCheckoutDetailsFromCustomer({
-            name: name, phone: phone, email: email,
-            addr1: addr1, addr2: addr2, city: city, state: state, pin: pin
-          });
-        } catch (e2) {}
-      }
-    } catch (e) { /* non-blocking: never break the WhatsApp flow */ }
-  }
-
-  // ── Operations (Upgrade 10): decrement local stock + record analytics ──
-  // Safe + guarded: never blocks the order flow if the service is missing.
-  if (window.OperationsService && createdOrder) {
-    try { window.OperationsService.decrementInventoryForOrder(createdOrder); } catch (e) {}
-    try {
-      window.OperationsService.recordAnalyticsEvent("order_created", {
-        orderId: orderId, total: total, itemCount: launchCount(), checkoutType: "whatsapp"
-      });
-    } catch (e) {}
-  }
-  if (window.OperationsService) {
-    try { window.OperationsService.recordAnalyticsEvent("whatsapp_checkout_started", { orderId: orderId }); } catch (e) {}
-  }
-
-  var waUrl = "https://wa.me/" + LAUNCH_CONFIG.whatsappNumber + "?text=" + encodeURIComponent(msg);
-  window.open(waUrl, "_blank");
-
-  // Clear cart + any one-time local offers (e.g. gift packaging) — Upgrade 9
-  launchCart = []; saveLaunchCart();
-  if (window.Offers) { try { window.Offers.removeLocalOfferFromCart(window.Offers.GIFT_OFFER_ID); } catch (e) {} }
-  var confirmEl = document.getElementById("order-confirm-msg");
-  if (confirmEl) {
-    confirmEl.style.display = "block";
-    form.style.display = "none";
-    // Populate order id + "View Order Details" link on the inline confirm panel
-    var idEl = document.getElementById("confirm-order-id");
-    if (idEl) idEl.textContent = "Order ID: " + orderId;
-    var viewEl = document.getElementById("confirm-view-link");
-    if (viewEl) viewEl.href = nfPath("/pages/order/confirmation.html") + "?orderId=" + encodeURIComponent(orderId);
+/* setCheckoutBusy — disables the CTA and shows what is happening. Always
+   called with false again on every exit path, including failures. */
+function setCheckoutBusy(busy, label) {
+  var btn = document.getElementById("btn-place-order");
+  if (!btn) return;
+  if (busy) {
+    if (!btn.dataset.idleLabel) btn.dataset.idleLabel = btn.innerHTML;
+    btn.disabled = true;
+    btn.setAttribute("aria-busy", "true");
+    btn.classList.add("is-busy");
+    btn.innerHTML = '<span class="btn-spinner" aria-hidden="true"></span>' +
+                    (label || "Processing…");
+  } else {
+    btn.disabled = false;
+    btn.removeAttribute("aria-busy");
+    btn.classList.remove("is-busy");
+    if (btn.dataset.idleLabel) btn.innerHTML = btn.dataset.idleLabel;
   }
 }
+
+/* ── field-level validation ────────────────────────────────────────────────
+   Mirrors api/_lib/validate.js so the customer is corrected before a round
+   trip. The SERVER is still the authority — this is convenience, not security. */
+
+function clearFieldErrors() {
+  document.querySelectorAll(".field-error").forEach(function (el) { el.remove(); });
+  document.querySelectorAll(".has-error").forEach(function (el) {
+    el.classList.remove("has-error");
+    el.removeAttribute("aria-invalid");
+  });
+}
+
+function showFieldErrors(fields) {
+  if (!fields) return;
+  var first = null;
+  Object.keys(fields).forEach(function (name) {
+    var input = document.querySelector('#shipping-form [name="' + name + '"]');
+    if (!input) return;
+    input.classList.add("has-error");
+    input.setAttribute("aria-invalid", "true");
+    var msg = document.createElement("p");
+    msg.className = "field-error";
+    msg.textContent = fields[name];
+    if (input.parentNode) input.parentNode.appendChild(msg);
+    if (!first) first = input;
+  });
+  if (first) {
+    try { first.scrollIntoView({ behavior: "smooth", block: "center" }); } catch (e) {}
+    try { first.focus({ preventScroll: true }); } catch (e) {}
+  }
+}
+
+function nfNormalizePhone(v) {
+  var d = String(v || "").replace(/\D/g, "");
+  if (d.length > 10) {
+    if (d.indexOf("91") === 0 && d.length === 12) d = d.slice(2);
+    else if (d.charAt(0) === "0" && d.length === 11) d = d.slice(1);
+    else d = d.slice(-10);
+  }
+  return (d.length === 10 && /^[6-9]/.test(d)) ? d : null;
+}
+
+/* collectCheckoutForm() -> { valid, errors, values } */
+function collectCheckoutForm() {
+  var form = document.getElementById("shipping-form");
+  if (!form) return { valid: false, errors: {}, values: null };
+
+  function val(name) {
+    var el = form.querySelector('[name="' + name + '"]');
+    return el ? String(el.value || "").replace(/\s+/g, " ").trim() : "";
+  }
+
+  var values = {
+    name:  val("name"),
+    phone: val("phone"),
+    email: val("email"),
+    addr1: val("addr1"),
+    addr2: val("addr2"),
+    city:  val("city"),
+    state: val("state"),
+    pin:   val("pin"),
+    notes: (function () {
+      var el = form.querySelector('[name="notes"]');
+      return el ? String(el.value || "").trim() : "";
+    })()
+  };
+
+  var errors = {};
+  if (!values.name || !/[A-Za-zÀ-ɏऀ-ॿ]/.test(values.name)) {
+    errors.name = "Please enter your full name.";
+  }
+  if (!nfNormalizePhone(values.phone)) {
+    errors.phone = "Please enter a valid 10-digit Indian mobile number.";
+  }
+  if (!/^[^\s@]+@[^\s@]+\.[A-Za-z]{2,}$/.test(values.email)) {
+    errors.email = "Please enter a valid email address — we send your order confirmation here.";
+  }
+  if (values.addr1.length < 5) errors.addr1 = "Please enter your full street address.";
+  if (values.city.length < 2)  errors.city  = "Please enter your city.";
+  if (values.state.length < 2) errors.state = "Please select your state.";
+  if (!/^[1-9][0-9]{5}$/.test(values.pin.replace(/\D/g, ""))) {
+    errors.pin = "Please enter a valid 6-digit PIN code.";
+  }
+
+  return { valid: Object.keys(errors).length === 0, errors: errors, values: values };
+}
+
+/* whatsappOptInChecked() — the consent checkbox. Absent checkbox means NO
+   consent; consent is never assumed. */
+function whatsappOptInChecked() {
+  var box = document.getElementById("whatsapp-optin");
+  return !!(box && box.checked);
+}
+
+/* ── promo code ─────────────────────────────────────────────────────────────
+   The applied code is held here and sent with the order. The DISCOUNT AMOUNT
+   is never sent — the server recomputes eligibility and rupees from scratch at
+   order time. Everything shown here is display only. */
+
+var nfAppliedPromo = null;   // { code, label, discount, totals }
+
+function promoMsg(text, kind) {
+  var el = document.getElementById("promo-msg");
+  if (!el) return;
+  el.textContent = text || "";
+  el.className = "promo-msg" + (kind ? " is-" + kind : "");
+}
+
+function setPromoBusy(busy) {
+  var btn = document.getElementById("promo-apply");
+  if (!btn) return;
+  btn.disabled = busy;
+  btn.textContent = busy ? "Checking…" : (nfAppliedPromo ? "Remove" : "Apply");
+}
+
+function renderPromoState() {
+  var input = document.getElementById("promo-code");
+  var btn   = document.getElementById("promo-apply");
+  if (!input || !btn) return;
+
+  if (nfAppliedPromo) {
+    input.value = nfAppliedPromo.code;
+    input.readOnly = true;
+    input.classList.add("is-applied");
+    btn.textContent = "Remove";
+    promoMsg(nfAppliedPromo.label + " applied — you save " +
+             LAUNCH_CONFIG.currency + nfAppliedPromo.discount.toLocaleString("en-IN") + ".", "success");
+  } else {
+    input.readOnly = false;
+    input.classList.remove("is-applied");
+    btn.textContent = "Apply";
+  }
+  renderOrderSummary();
+}
+
+function applyPromoCode() {
+  var input = document.getElementById("promo-code");
+  if (!input) return;
+
+  // Same button removes an applied code.
+  if (nfAppliedPromo) {
+    nfAppliedPromo = null;
+    input.value = "";
+    promoMsg("Promo code removed.", "info");
+    renderPromoState();
+    return;
+  }
+
+  var code = (input.value || "").trim();
+  if (!code) { promoMsg("Please enter a promo code.", "error"); input.focus(); return; }
+  if (launchCart.length === 0) { promoMsg("Add something to your cart first.", "error"); return; }
+
+  // Eligibility depends on who is ordering, so send whatever contact detail the
+  // customer has typed. A signed-in session takes priority server-side.
+  var form = document.getElementById("shipping-form");
+  var emailEl = form && form.querySelector('[name="email"]');
+  var phoneEl = form && form.querySelector('[name="phone"]');
+  var contact = (emailEl && emailEl.value.trim()) || (phoneEl && phoneEl.value.trim()) || "";
+
+  setPromoBusy(true);
+  promoMsg("Checking your code…", "info");
+
+  window.NafumeAPI.post("/api/discounts/validate", {
+    code: code,
+    items: launchCart.map(function (it) { return { id: it.id, qty: it.qty }; }),
+    giftingAddOn: !!(window.Offers && window.Offers.getGiftingAddOn().applied),
+    paymentMethod: getShippingPaymentMethod(),
+    contact: contact
+  }).then(function (res) {
+    setPromoBusy(false);
+
+    if (!res.ok) {
+      promoMsg(res.message || "We couldn't check that code. Please try again.", "error");
+      return;
+    }
+    if (!res.data.applied) {
+      nfAppliedPromo = null;
+      promoMsg(res.data.message || "That code isn't valid.", "error");
+      renderPromoState();
+      return;
+    }
+
+    nfAppliedPromo = {
+      code:     res.data.code,
+      label:    res.data.label,
+      discount: res.data.discount,
+      totals:   res.data.totals
+    };
+    renderPromoState();
+  });
+}
+
+/* Re-checks an applied code after the cart or payment method changes, because
+   both change the amount it is worth. Silently drops it if it no longer
+   applies, and says so. */
+function revalidatePromoCode() {
+  if (!nfAppliedPromo) return;
+  var code = nfAppliedPromo.code;
+  nfAppliedPromo = null;
+  var input = document.getElementById("promo-code");
+  if (input) { input.readOnly = false; input.value = code; }
+  applyPromoCode();
+}
+
+/* checkoutPayload(paymentMethod) — the exact body both order endpoints take. */
+function checkoutPayload(values, paymentMethod) {
+  var total = launchTotal();
+  if (window.Offers) {
+    try { total = window.Offers.getCartOfferSummary(launchCart, paymentMethod).total; } catch (e) {}
+  }
+  // An applied promo changes the payable amount, so the amount we send for the
+  // server's equality check must be the DISCOUNTED total the customer was
+  // shown. Only the CODE travels — never the discount amount.
+  if (nfAppliedPromo && nfAppliedPromo.totals &&
+      typeof nfAppliedPromo.totals.total === "number") {
+    total = nfAppliedPromo.totals.total;
+  }
+
+  return {
+    items: launchCart.map(function (it) { return { id: it.id, qty: it.qty }; }),
+    amount: total,
+    discountCode: nfAppliedPromo ? nfAppliedPromo.code : null,
+    giftingAddOn: !!(window.Offers && window.Offers.getGiftingAddOn().applied),
+    whatsappOptIn: whatsappOptInChecked(),
+    notes: values.notes,
+    shipping: {
+      name:  values.name,  phone: values.phone, email: values.email,
+      addr1: values.addr1, addr2: values.addr2,
+      city:  values.city,  state: values.state, pin: values.pin
+    }
+  };
+}
+
+/* ── after an order exists ───────────────────────────────────────────────── */
+
+/* onOrderPlaced(order, prefill)
+   Runs only once the SERVER has confirmed the order. Caches the order locally
+   for offline viewing, remembers the contact detail so the confirmation page
+   can authenticate a guest lookup, stores the account prefill, clears the cart,
+   and redirects. */
+function onOrderPlaced(order, prefill, values) {
+  try {
+    if (window.NafumeAPI) {
+      window.NafumeAPI.rememberCheckoutContact(order.orderId, values.email || values.phone);
+      window.NafumeAPI.rememberAccountPrefill(prefill || {
+        name: values.name, email: values.email, phone: values.phone, orderId: order.orderId
+      });
+    }
+  } catch (e) {}
+
+  // Local cache so confirmation/track pages still show something if the network
+  // drops on the very next page load. The server remains the source of truth.
+  try {
+    if (window.Commerce && window.NafumeAPI) {
+      var local = window.NafumeAPI.toLocalOrder(order);
+      var all = window.Commerce.getAllOrders();
+      var replaced = false;
+      for (var i = 0; i < all.length; i++) {
+        if (all[i].orderId === local.orderId) { all[i] = local; replaced = true; break; }
+      }
+      if (!replaced) all.unshift(local);
+      window.Commerce.saveAllOrders(all);
+    }
+  } catch (e) {}
+
+  try {
+    if (window.OperationsService) {
+      window.OperationsService.recordAnalyticsEvent("order_created", {
+        orderId: order.orderId, total: order.totals ? order.totals.total : 0,
+        checkoutType: order.paymentMethod
+      });
+    }
+  } catch (e) {}
+
+  launchCart = []; saveLaunchCart();
+  if (window.Offers) {
+    try { window.Offers.removeLocalOfferFromCart(window.Offers.GIFT_OFFER_ID); } catch (e) {}
+  }
+
+  window.location.href = nfPath("/pages/order/confirmation.html") +
+    "?orderId=" + encodeURIComponent(order.orderId);
+}
+
+/* ── entry point (form submit) ─────────────────────────────────────────────
+   `placeOrder` is bound both as the form's onsubmit and to the primary CTA, so
+   Enter-in-a-field and tapping the button behave identically. */
+
+var nfCheckoutInFlight = false;
+
+function placeOrder(event) {
+  if (event) event.preventDefault();
+
+  // Guard against double submission at the source, not just visually.
+  if (nfCheckoutInFlight) return;
+
+  clearCheckoutStatus();
+  clearFieldErrors();
+
+  if (launchCart.length === 0) {
+    showCheckoutStatus("Your cart is empty. Please add a fragrance before placing an order.", "error");
+    return;
+  }
+
+  var collected = collectCheckoutForm();
+  if (!collected.valid) {
+    showFieldErrors(collected.errors);
+    showCheckoutStatus("Please correct the highlighted fields and try again.", "error");
+    return;
+  }
+
+  var method = getShippingPaymentMethod();
+  nfCheckoutInFlight = true;
+
+  if (/cod|cash/i.test(method)) placeCodOrder(collected.values, method);
+  else                          payWithRazorpay(collected.values, method);
+}
+
+/* Kept as an alias so any older markup or bookmark that still calls
+   submitShippingForm() places a real order instead of silently doing nothing. */
+function submitShippingForm(event) { return placeOrder(event); }
+
+/* ── Cash on Delivery ─────────────────────────────────────────────────────── */
+
+function placeCodOrder(values, method) {
+  setCheckoutBusy(true, "Placing your order…");
+  showCheckoutStatus("Placing your order…", "info");
+
+  window.NafumeAPI.post("/api/orders/create-cod", checkoutPayload(values, method))
+    .then(function (res) {
+      nfCheckoutInFlight = false;
+      setCheckoutBusy(false);
+
+      if (!res.ok) {
+        if (res.fields) showFieldErrors(res.fields);
+        showCheckoutStatus(res.message || "We couldn't place your order. Please try again.", "error");
+        return;
+      }
+      showCheckoutStatus("Order confirmed. Taking you to your order details…", "success");
+      onOrderPlaced(res.data.order, res.data.accountPrefill, values);
+    });
+}
+
+/* ── legacy WhatsApp message builder ───────────────────────────────────────
+   Still used to compose the COURTESY confirmation a customer can send after a
+   real order exists (confirmation page). It no longer creates orders.       */
+function buildWhatsAppOrderText(order) {
+  if (!order) return "";
+  var c = order.customer || {};
+  var t = order.totals || {};
+  var curr = LAUNCH_CONFIG.currency;
+  var address = (c.address || "") + ", " + (c.city || "") + " " + (c.state || "") +
+    (c.pincode ? " - " + c.pincode : "");
+  var itemLines = (order.items || []).map(function (it, i) {
+    var qty = it.quantity || it.qty || 1;
+    return (i + 1) + ". " + it.name + " x " + qty + " = " + curr + ((it.price || 0) * qty).toLocaleString("en-IN");
+  }).join("\n");
+
+  return "NAFUME Order " + order.orderId + "\n\n" +
+    "Name: " + (c.name || "—") + "\n" +
+    "Phone: " + (c.phone || "—") + "\n" +
+    "Email: " + (c.email || "—") + "\n\n" +
+    "Address:\n" + address + "\n\n" +
+    "Items:\n" + itemLines + "\n\n" +
+    "Total: " + curr + (t.total || 0).toLocaleString("en-IN") + "\n" +
+    "Payment: " + (order.paymentStatus === "paid" ? "PAID online" : "Cash on Delivery") + "\n\n" +
+    "Please confirm dispatch. Thank you!";
+}
+window.buildWhatsAppOrderText = buildWhatsAppOrderText;
 
 // ─── Instagram carousel (global — referenced by rendered footer onclick) ──
 window.igCarouselMove = function(dir) {
@@ -2308,11 +2672,10 @@ document.addEventListener("DOMContentLoaded", function() {
         '<a href="/#new-launches" class="shipping-empty-cta">Return to New Launches →</a>';
       shippingForm.parentNode.insertBefore(emptyMsg, shippingForm);
     } else {
-      document.getElementById("shipping-form").addEventListener("submit", submitShippingForm);
-      initCheckoutModeUI();      // Upgrade 2: adapt CTAs to local vs Shopify mode
-      initCheckoutAccountUI();   // Upgrade 3: prefill from account / login prompt
-      initCheckoutOffersUI();    // Upgrade 9: prepaid / gift / bundle / sample
-      initRazorpayCheckoutUI();  // Razorpay: show "Pay Online" button when configured
+      document.getElementById("shipping-form").addEventListener("submit", placeOrder);
+      initCheckoutUI();          // payment-method CTA, inline validation
+      initCheckoutAccountUI();   // prefill from the signed-in account
+      initCheckoutOffersUI();    // prepaid / gift / bundle / sample
       // Analytics (Upgrade 10): reached checkout with items.
       if (window.OperationsService) {
         try { window.OperationsService.recordAnalyticsEvent("begin_checkout", { itemCount: launchCount() }); } catch (e) {}
@@ -2323,497 +2686,358 @@ document.addEventListener("DOMContentLoaded", function() {
   renderGlobalFooter();
 });
 
-/* ─── Checkout mode UI (Upgrade 2) ─────────────────────────────────────────
-   Adapts the shipping page CTAs based on the active commerce mode. WhatsApp
-   always stays available; the Shopify "Secure Checkout" button only appears
-   (and only works) when Shopify mode is enabled AND configured.            */
-function initCheckoutModeUI() {
-  var secureBtn = document.getElementById("btn-secure-checkout");
-  var waBtn     = document.getElementById("btn-place-order");
-  var warnNote  = document.getElementById("checkout-warning-note");
-  var trustNote = document.getElementById("checkout-trust-note");
+/* ─── Razorpay online payment ───────────────────────────────────────────────
+   The full flow, with the security-critical parts on the server:
 
-  var hasCommerce = !!(window.Commerce);
-  var mode        = hasCommerce ? window.Commerce.getCommerceMode() : "local";
-  var shopifyLive = hasCommerce && window.Commerce.isShopifyCheckoutEnabled();
+     1. POST /api/razorpay/create-order
+          The server validates the shipping details, RE-PRICES the cart from its
+          own catalogue, rejects any mismatch with what the browser thinks the
+          total is, creates the Razorpay order, and saves a PENDING order plus
+          the customer and their WhatsApp consent.
+     2. Razorpay Checkout opens with the publishable key_id the server returned.
+        No secret ever exists in this file or any other frontend file.
+     3. POST /api/razorpay/verify-payment
+          The server checks the HMAC signature, re-fetches the payment from
+          Razorpay to confirm it was really captured for the right amount, and
+          only then marks the order paid. The browser's "payment succeeded"
+          callback is never treated as proof on its own.
 
-  // ── Shopify enabled AND fully configured ──
-  if (shopifyLive) {
-    if (secureBtn) {
-      secureBtn.style.display = "";
-      secureBtn.addEventListener("click", startSecureCheckout);
-    }
-    if (trustNote) trustNote.textContent = "Secure checkout powered by Shopify.";
-    if (warnNote)  warnNote.style.display = "none";
-    // Demote WhatsApp to the assisted/secondary option (keeps working).
-    if (waBtn) {
-      waBtn.classList.add("btn-place-order--secondary");
-      var label = waBtn.childNodes[waBtn.childNodes.length - 1];
-      if (label && label.nodeType === 3) label.textContent = " Order on WhatsApp";
-    }
-    return;
-  }
+   Every failure path restores the button, shows a specific message, and leaves
+   the cart untouched so the customer can simply try again.                   */
 
-  // ── Shopify intended but NOT configured (mode = shopify, creds missing) ──
-  if (mode === "shopify") {
-    if (secureBtn) {
-      secureBtn.style.display = "";
-      secureBtn.disabled = true;
-      secureBtn.classList.add("btn-secure-checkout--disabled");
-      var sLabel = secureBtn.childNodes[secureBtn.childNodes.length - 1];
-      if (sLabel && sLabel.nodeType === 3) sLabel.textContent = " Checkout temporarily unavailable";
-    }
-    if (warnNote) {
-      warnNote.style.display = "";
-      warnNote.textContent = "Online checkout is being connected. You can still order safely on WhatsApp.";
-    }
-    if (trustNote) trustNote.style.display = "none";
-    return;
-  }
+/* ensureRazorpaySdk() -> Promise<boolean>
+   Loads Razorpay's checkout.js ON DEMAND rather than with a blocking <script>
+   tag on the checkout page.
 
-  // ── Local mode (default) — WhatsApp is the primary checkout ──
-  if (secureBtn) secureBtn.style.display = "none";
-  if (warnNote)  warnNote.style.display = "none";
-  if (trustNote) trustNote.textContent = "Secure checkout powered by NAFUME commerce system.";
+   Why: a classic <script src="https://checkout.razorpay.com/…"> executes in
+   order and blocks every script after it. When Razorpay's CDN is slow or
+   unreachable, that left the whole checkout page inert — no validation, no
+   button handler, and the form falling back to a native GET submit. Fetching it
+   only when someone actually chooses to pay means a third-party outage can
+   never break the page, and COD keeps working regardless.
+
+   Resolves false (never rejects) if the SDK cannot be loaded, so the caller can
+   show a proper message. */
+var nfRazorpaySdkPromise = null;
+
+function ensureRazorpaySdk() {
+  if (typeof window.Razorpay !== "undefined") return Promise.resolve(true);
+  if (nfRazorpaySdkPromise) return nfRazorpaySdkPromise;
+
+  nfRazorpaySdkPromise = new Promise(function (resolve) {
+    var script = document.createElement("script");
+    script.src = "https://checkout.razorpay.com/v1/checkout.js";
+    script.async = true;
+
+    var settled = false;
+    function finish(okState) {
+      if (settled) return;
+      settled = true;
+      // Allow a retry on a later attempt rather than caching the failure.
+      if (!okState) nfRazorpaySdkPromise = null;
+      resolve(okState);
+    }
+
+    var timer = setTimeout(function () { finish(false); }, 12000);
+    script.onload  = function () { clearTimeout(timer); finish(typeof window.Razorpay !== "undefined"); };
+    script.onerror = function () { clearTimeout(timer); finish(false); };
+
+    document.head.appendChild(script);
+  });
+
+  return nfRazorpaySdkPromise;
 }
 
-/* Start the Shopify hosted checkout (Upgrade 2).
-   Validates cart + variant mapping, calls the Storefront API via the commerce
-   service, then redirects. On any failure it shows a message and keeps the
-   WhatsApp option intact (never clears the cart). */
-function startSecureCheckout() {
-  var secureBtn = document.getElementById("btn-secure-checkout");
-  var warnNote  = document.getElementById("checkout-warning-note");
+function payWithRazorpay(values, method) {
+  setCheckoutBusy(true, "Starting secure payment…");
+  showCheckoutStatus("Starting secure payment…", "info");
 
-  if (!window.Commerce || typeof window.Commerce.createCheckoutSession !== "function") {
-    if (warnNote) { warnNote.style.display = ""; warnNote.textContent = "Secure checkout is unavailable right now. Please order on WhatsApp."; }
-    return;
-  }
+  try {
+    if (window.OperationsService) {
+      window.OperationsService.recordAnalyticsEvent("razorpay_checkout_started", {});
+    }
+  } catch (e) {}
 
-  var cart = window.Commerce.getCart();
-  if (!cart || cart.length === 0) {
-    if (warnNote) { warnNote.style.display = ""; warnNote.textContent = "Your cart is empty. Add a fragrance before checkout."; }
-    return;
-  }
+  ensureRazorpaySdk().then(function (sdkReady) {
+    if (!sdkReady) {
+      nfCheckoutInFlight = false;
+      setCheckoutBusy(false);
+      showCheckoutStatus(
+        "We couldn't load the secure payment window. Please check your connection and try again, " +
+        "or choose Cash on Delivery.", "error");
+      return;
+    }
+    startRazorpayOrder(values, method);
+  });
+}
 
-  // Optional: pass the email if the shopper already typed it.
-  var emailEl = document.querySelector('#shipping-form [name="email"]');
-  var customerInfo = { email: emailEl ? (emailEl.value || "").trim() : "" };
-
-  /* ⚠️ SHOPIFY + OFFERS (Upgrade 9) ─────────────────────────────────────────
-     Local bundle / prepaid / gift offers DO NOT automatically apply inside a
-     Shopify hosted checkout. Configure matching discounts in Shopify Admin
-     (discount codes / automatic discounts / bundle + sample + gift products)
-     BEFORE enabling live Shopify checkout. We only pass safe, descriptive cart
-     ATTRIBUTES below (no fake discount lines, no Admin API) so your store/app
-     can read what the shopper expected. See docs/upsells-bundles-system.md.   */
-  if (window.Offers) {
-    try {
-      var os = window.Offers.getCartOfferSummary(launchCart, getShippingPaymentMethod());
-      customerInfo.cartAttributes = {
-        appliedOfferLabels:   (os.appliedOffers || []).map(function (o) { return o.label; }).join("; "),
-        giftPackagingRequested: os.giftingAddOn > 0 ? "yes" : "no",
-        buyAny3Eligible:      os.bundle && os.bundle.eligible ? "yes" : "no",
-        tryMeSampleEligible:  os.tryMeSample && os.tryMeSample.eligible ? "yes" : "no"
-      };
-      if (os.appliedOffers && os.appliedOffers.length) {
-        console.warn("[NAFUME] Local offers are NOT auto-applied in Shopify checkout. " +
-          "Configure matching discounts in Shopify Admin. Offers:", customerInfo.cartAttributes.appliedOfferLabels);
-      }
-    } catch (e) {}
-  }
-
-  var originalLabel = secureBtn ? secureBtn.innerHTML : "";
-  if (secureBtn) { secureBtn.disabled = true; secureBtn.innerHTML = "Starting secure checkout…"; }
-
-  // Analytics (Upgrade 10): Shopify secure checkout started.
-  if (window.OperationsService) {
-    try { window.OperationsService.recordAnalyticsEvent("shopify_checkout_started", { itemCount: cart.length }); } catch (e) {}
-  }
-
-  window.Commerce.createCheckoutSession(cart, customerInfo, {})
+function startRazorpayOrder(values, method) {
+  window.NafumeAPI.post("/api/razorpay/create-order", checkoutPayload(values, method))
     .then(function (res) {
-      if (res && res.success && res.checkoutUrl) {
-        var ok = window.ShopifyService
-          ? window.ShopifyService.redirectToShopifyCheckout(res.checkoutUrl)
-          : (window.location.assign(res.checkoutUrl), true);
-        if (!ok && warnNote) {
-          warnNote.style.display = "";
-          warnNote.innerHTML = 'Your browser blocked the redirect. ' +
-            '<a href="' + res.checkoutUrl + '">Click here to continue to secure checkout</a>, or order on WhatsApp.';
-        }
-        return;
-      }
-      // Failure → show message, restore button, keep WhatsApp working.
-      if (warnNote) {
-        warnNote.style.display = "";
-        warnNote.textContent = (res && res.message) ||
-          "Secure checkout could not start right now. Please order on WhatsApp or try again.";
-      }
-      if (secureBtn) { secureBtn.disabled = false; secureBtn.innerHTML = originalLabel; }
-    })
-    .catch(function () {
-      if (warnNote) {
-        warnNote.style.display = "";
-        warnNote.textContent = "Secure checkout could not start right now. Please order on WhatsApp or try again.";
-      }
-      if (secureBtn) { secureBtn.disabled = false; secureBtn.innerHTML = originalLabel; }
-    });
-}
-
-/* ─── Razorpay "Pay Online" checkout ────────────────────────────────────────
-   Adds a real payment option alongside the existing WhatsApp flow — never
-   replaces it. Order creation + signature verification happen server-side
-   (api/razorpay/create-order.js, api/razorpay/verify-payment.js); this file
-   only ever sees the publishable key_id returned by create-order.js.        */
-function initRazorpayCheckoutUI() {
-  var rzpBtn = document.getElementById("btn-razorpay-checkout");
-  if (!rzpBtn) return;
-  var cfg = (window.COMMERCE_CONFIG && window.COMMERCE_CONFIG.razorpay) || {};
-  if (!cfg.enabled || typeof window.Razorpay === "undefined") {
-    rzpBtn.style.display = "none";
-    return;
-  }
-  if (cfg.buttonLabel) {
-    var labelNode = rzpBtn.childNodes[rzpBtn.childNodes.length - 1];
-    if (labelNode && labelNode.nodeType === 3) labelNode.textContent = " " + cfg.buttonLabel;
-  }
-  rzpBtn.style.display = "";
-  rzpBtn.addEventListener("click", payWithRazorpay);
-}
-
-function razorpayShowStatus(msg, isError) {
-  var note = document.getElementById("razorpay-status-note");
-  if (!note) return;
-  note.style.display = "";
-  note.textContent = msg;
-  note.style.background   = isError ? "#fdecea" : "#fdf6e3";
-  note.style.borderColor  = isError ? "#f3c6c3" : "#f0e2b8";
-  note.style.color        = isError ? "#a4342d" : "#8a6d1f";
-}
-function razorpayHideStatus() {
-  var note = document.getElementById("razorpay-status-note");
-  if (note) note.style.display = "none";
-}
-
-function payWithRazorpay() {
-  var rzpBtn = document.getElementById("btn-razorpay-checkout");
-  var form   = document.getElementById("shipping-form");
-  if (!rzpBtn || !form) return;
-
-  if (launchCart.length === 0) {
-    razorpayShowStatus("Your cart is empty. Please add products before placing an order.", true);
-    return;
-  }
-
-  // Collect + validate shipping fields (same required fields as the WhatsApp
-  // flow, kept as a separate copy so submitShippingForm() stays untouched).
-  var name  = (form.querySelector('[name="name"]').value  || "").trim();
-  var phone = (form.querySelector('[name="phone"]').value || "").trim();
-  var email = (form.querySelector('[name="email"]').value || "").trim();
-  var addr1 = (form.querySelector('[name="addr1"]').value || "").trim();
-  var addr2 = (form.querySelector('[name="addr2"]').value || "").trim();
-  var city  = (form.querySelector('[name="city"]').value  || "").trim();
-  var state = (form.querySelector('[name="state"]').value || "").trim();
-  var pin   = (form.querySelector('[name="pin"]').value   || "").trim();
-
-  if (!name || !phone || !addr1 || !city || !pin) {
-    razorpayShowStatus("Please fill in all required fields (Name, Phone, Address, City, PIN) before paying online.", true);
-    return;
-  }
-  razorpayHideStatus();
-
-  // Offer-aware total — matches exactly what's shown in the Order Summary.
-  // "online" makes this eligible for the prepaid discount if configured.
-  var paymentLabel = "Razorpay (Online Payment)";
-  var total = launchTotal();
-  var appliedOffers = [];
-  if (window.Offers) {
-    try {
-      var s = window.Offers.getCartOfferSummary(launchCart, paymentLabel);
-      total = s.total;
-      appliedOffers = s.appliedOffers || [];
-    } catch (e) {}
-  }
-  if (!(total > 0)) {
-    razorpayShowStatus("Order amount is invalid. Please refresh and try again.", true);
-    return;
-  }
-
-  var orderId = "NF-" + Date.now().toString().slice(-6) + "-" + Math.floor(100 + Math.random() * 900);
-
-  // Snapshot a local order now (paymentStatus: "pending") — same pattern the
-  // WhatsApp flow uses, so confirmation.html / track-order.html can read it
-  // even if the customer abandons payment. Never marked "paid" here.
-  var createdOrder = null;
-  if (window.Commerce && typeof window.Commerce.createLocalOrder === "function") {
-    try {
-      var notesEl  = form.querySelector('[name="notes"]');
-      var acctCust = (window.CustomerService && window.CustomerService.getCurrentCustomer)
-        ? window.CustomerService.getCurrentCustomer() : null;
-      createdOrder = window.Commerce.createLocalOrder({
-        orderId: orderId,
-        customer: {
-          name: name, phone: phone, email: email,
-          address: addr1 + (addr2 ? ", " + addr2 : ""),
-          city: city, state: state, pincode: pin
-        },
-        customerId: acctCust ? acctCust.customerId : null,
-        customerSnapshot: { name: name, phone: phone, email: email },
-        paymentMethod: paymentLabel,
-        offers: appliedOffers,
-        notes: notesEl ? (notesEl.value || "").trim() : "",
-        whatsappMessage: ""
-      });
-      if (createdOrder && window.Commerce.getAllOrders && window.Commerce.saveAllOrders) {
-        var all = window.Commerce.getAllOrders();
-        for (var i = 0; i < all.length; i++) {
-          if (all[i].orderId === orderId) { all[i].checkoutType = "razorpay_pending"; break; }
-        }
-        window.Commerce.saveAllOrders(all);
-      }
-    } catch (e) { createdOrder = null; }
-  }
-  if (!createdOrder) {
-    razorpayShowStatus("Could not start payment right now. Please try again or use WhatsApp.", true);
-    return;
-  }
-
-  var cfg = (window.COMMERCE_CONFIG && window.COMMERCE_CONFIG.razorpay) || {};
-  var createEndpoint = cfg.createOrderEndpoint || "/api/razorpay/create-order";
-
-  var originalLabel = rzpBtn.innerHTML;
-  rzpBtn.disabled = true;
-  rzpBtn.innerHTML = "Starting payment…";
-
-  if (window.OperationsService) {
-    try { window.OperationsService.recordAnalyticsEvent("razorpay_checkout_started", { orderId: orderId, total: total }); } catch (e) {}
-  }
-
-  // Gifting add-on is a local opt-in checkbox (js/commerce/offer-service.js);
-  // only the boolean intent is sent — the server applies its own fixed price
-  // for it so the exact-match total calculation stays fully server-trusted.
-  var giftingRequested = !!(window.Offers && window.Offers.getGiftingAddOn().applied);
-
-  fetch(createEndpoint, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      items: launchCart.map(function (it) { return { id: it.id, qty: it.qty }; }),
-      giftingAddOn: giftingRequested,
-      amount: total,
-      // Lets Razorpay's order "receipt" match our own order id, so a payment
-      // in the Razorpay Dashboard can be traced straight back to this order.
-      orderId: orderId
-    })
-  })
-    .then(function (r) { return r.json().catch(function () { return {}; }).then(function (data) { return { ok: r.ok, data: data }; }); })
-    .then(function (res) {
-      rzpBtn.disabled = false;
-      rzpBtn.innerHTML = originalLabel;
-
-      if (!res.ok || !res.data || !res.data.order_id) {
-        razorpayShowStatus((res.data && res.data.message) || "Could not start payment right now. Please try again or use WhatsApp.", true);
+      if (!res.ok) {
+        nfCheckoutInFlight = false;
+        setCheckoutBusy(false);
+        if (res.fields) showFieldErrors(res.fields);
+        showCheckoutStatus(
+          res.message || "We couldn't start the payment. Please try again in a moment.", "error");
         return;
       }
 
-      var rp = res.data;
-      var rzp = new Razorpay({
-        key:         rp.key_id,
-        amount:      rp.amount,
-        currency:    rp.currency,
-        order_id:    rp.order_id,
+      var data = res.data;
+      var cfg  = (window.COMMERCE_CONFIG && window.COMMERCE_CONFIG.razorpay) || {};
+
+      // The order now exists server-side as `pending`. Remember how to find it
+      // BEFORE opening the payment sheet, so a customer who pays and then loses
+      // the browser can still be reconciled from the confirmation page.
+      try {
+        window.NafumeAPI.rememberCheckoutContact(data.nafume_order_id, values.email);
+      } catch (e) {}
+
+      setCheckoutBusy(true, "Waiting for payment…");
+      showCheckoutStatus("Complete your payment in the secure window.", "info");
+
+      var rzp = new window.Razorpay({
+        key:         data.key_id,
+        amount:      data.amount,
+        currency:    data.currency,
+        order_id:    data.order_id,
         name:        "NAFUME Artisan Luxe",
-        description: "Order " + orderId,
+        description: "Order " + data.nafume_order_id,
         image:       "/assets/logo/logo-mark.png",
-        prefill:     { name: name, email: email, contact: phone },
+        prefill:     { name: values.name, email: values.email, contact: values.phone },
         theme:       { color: cfg.themeColor || "#C5A059" },
-        notes:       { orderId: orderId },
+        notes:       { nafumeOrderId: data.nafume_order_id },
+        retry:       { enabled: false },   // we handle retries ourselves, so a
+                                           // retry can't bypass our verification
         handler: function (response) {
-          verifyRazorpayPayment(response, orderId, rzpBtn, originalLabel);
+          verifyRazorpayPayment(response, data.nafume_order_id, values);
         },
         modal: {
           ondismiss: function () {
-            razorpayShowStatus("Payment was cancelled. Your cart and details are still saved — retry payment above or confirm on WhatsApp.", true);
+            nfCheckoutInFlight = false;
+            setCheckoutBusy(false);
+            showCheckoutStatus(
+              "Payment was cancelled. Your cart and details are still here — you can try again or choose Cash on Delivery.",
+              "error");
           }
         }
       });
 
-      rzp.on("payment.failed", function () {
-        razorpayShowStatus("Payment failed. Your cart and details are still saved — retry payment above or confirm on WhatsApp.", true);
-        if (window.OperationsService) {
-          try { window.OperationsService.recordAnalyticsEvent("razorpay_payment_failed", { orderId: orderId }); } catch (e) {}
-        }
+      rzp.on("payment.failed", function (resp) {
+        nfCheckoutInFlight = false;
+        setCheckoutBusy(false);
+        var reason = (resp && resp.error && resp.error.description)
+          ? resp.error.description
+          : "Your payment did not go through.";
+        showCheckoutStatus(reason + " Nothing has been charged. Please try again or choose Cash on Delivery.", "error");
+        try {
+          if (window.OperationsService) {
+            window.OperationsService.recordAnalyticsEvent("razorpay_payment_failed",
+              { orderId: data.nafume_order_id });
+          }
+        } catch (e) {}
       });
 
       rzp.open();
-    })
-    .catch(function () {
-      rzpBtn.disabled = false;
-      rzpBtn.innerHTML = originalLabel;
-      razorpayShowStatus("Payment service is temporarily unavailable. Please try again or use WhatsApp.", true);
     });
 }
 
-/* Server-side signature verification (Razorpay Standard Checkout callback is
-   NOT proof of payment on its own — only mark an order "paid" after this
-   endpoint returns success:true). On success: updates the local order,
-   clears the cart, and redirects to the confirmation page. On failure: never
-   touches the cart, shows a clear message, and keeps WhatsApp available. */
-/* Builds the WhatsApp message NAFUME receives once a Razorpay payment is
-   verified. Exposed on window so confirmation.html's "Notify NAFUME on
-   WhatsApp" button can reuse the exact same message. */
-function buildRazorpayOrderMessage(order) {
-  if (!order) return "";
-  var c    = order.customer || {};
-  var t    = order.totals || {};
-  var curr = LAUNCH_CONFIG.currency;
-  var address = (c.address || "—") + ", " + (c.city || "") + " " + (c.state || "") +
-    (c.pincode ? " - " + c.pincode : "");
-  var itemLines = (order.items || []).map(function (it, i) {
-    var qty = it.quantity || it.qty || 1;
-    return (i + 1) + ". " + it.name + " x " + qty + " = " + curr + ((it.price || 0) * qty).toLocaleString("en-IN");
-  }).join("\n");
-  var paymentId = (order.razorpay && order.razorpay.paymentId) || "—";
+/* verifyRazorpayPayment — server-side verification is the only thing that can
+   mark an order paid.
 
-  return "✅ NAFUME Order — Paid Online (Razorpay)\n\n" +
-    "Order ID: " + order.orderId + "\n" +
-    "Razorpay Payment ID: " + paymentId + "\n\n" +
-    "─── Customer Details ───\n" +
-    "Name: " + (c.name || "—") + "\n" +
-    "Phone: " + (c.phone || "—") + "\n" +
-    "Email: " + (c.email || "—") + "\n\n" +
-    "─── Delivery Address ───\n" + address + "\n\n" +
-    "─── Order Items ───\n" + itemLines + "\n\n" +
-    "Total Paid: " + curr + (t.total || 0).toLocaleString("en-IN") + "\n\n" +
-    "Payment has been verified — please process and dispatch this order.";
+   Note on retries: this is safe to call more than once for the same payment.
+   The endpoint is idempotent (UNIQUE razorpay_payment_id + a conditional
+   pending→paid update), so a retry after a flaky network resolves to the same
+   single order rather than a duplicate. */
+function verifyRazorpayPayment(response, nafumeOrderId, values, attempt) {
+  attempt = attempt || 1;
+
+  setCheckoutBusy(true, "Confirming your payment…");
+  showCheckoutStatus("Payment received — confirming your order…", "info");
+
+  window.NafumeAPI.post("/api/razorpay/verify-payment", {
+    razorpay_order_id:   response.razorpay_order_id,
+    razorpay_payment_id: response.razorpay_payment_id,
+    razorpay_signature:  response.razorpay_signature
+  }).then(function (res) {
+
+    /* ── the network dropped mid-confirmation ──────────────────────────────
+       The money may well have left the customer's account, so we retry rather
+       than declaring failure. Idempotency makes retrying free of risk.      */
+    if (res.offline && attempt < 3) {
+      showCheckoutStatus("Confirming your payment — reconnecting…", "info");
+      setTimeout(function () {
+        verifyRazorpayPayment(response, nafumeOrderId, values, attempt + 1);
+      }, 1500 * attempt);
+      return;
+    }
+
+    nfCheckoutInFlight = false;
+
+    if (!res.ok) {
+      setCheckoutBusy(false);
+      showCheckoutStatus(
+        (res.message || "We could not confirm your payment.") +
+        " If money was deducted, contact us with payment ID " + response.razorpay_payment_id +
+        " and we will sort it out immediately.",
+        "error");
+      return;
+    }
+
+    /* ── verified, but the order could not be stored ────────────────────────
+       The payment is genuine and the team has been alerted server-side. Tell
+       the customer the truth: their money is fine and we are on it.         */
+    if (res.data.persisted === false) {
+      setCheckoutBusy(false);
+      launchCart = []; saveLaunchCart();
+      showCheckoutStatus(
+        "Your payment is confirmed. We hit a hiccup saving the order, so our team has been alerted and " +
+        "will confirm on WhatsApp shortly. Your payment ID is " + response.razorpay_payment_id + ".",
+        "success");
+      return;
+    }
+
+    showCheckoutStatus("Payment confirmed. Taking you to your order…", "success");
+    try {
+      if (window.OperationsService) {
+        window.OperationsService.recordAnalyticsEvent("razorpay_payment_verified",
+          { orderId: nafumeOrderId });
+      }
+    } catch (e) {}
+
+    onOrderPlaced(res.data.order, res.data.accountPrefill, values);
+  });
 }
-window.buildRazorpayOrderMessage = buildRazorpayOrderMessage;
 
-function verifyRazorpayPayment(response, orderId, rzpBtn, originalLabel) {
-  rzpBtn.disabled = true;
-  rzpBtn.innerHTML = "Verifying payment…";
+/* ─── Checkout page setup ───────────────────────────────────────────────────
+   Wires the single "Place Order" CTA, keeps the label in step with the chosen
+   payment method, and hides online payment when Razorpay is switched off in
+   js/commerce/config.js (COD then stands alone rather than the page offering a
+   button that cannot work).                                                  */
+function initCheckoutUI() {
+  var form = document.getElementById("shipping-form");
+  if (!form) return;
 
   var cfg = (window.COMMERCE_CONFIG && window.COMMERCE_CONFIG.razorpay) || {};
-  var verifyEndpoint = cfg.verifyPaymentEndpoint || "/api/razorpay/verify-payment";
+  var onlineOption = document.querySelector('.payment-option[data-method="online"]');
+  var onlineRadio  = document.querySelector('[name="payment"][value="online"]');
+  var codRadio     = document.querySelector('[name="payment"][value="COD"]');
 
-  fetch(verifyEndpoint, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      razorpay_order_id:   response.razorpay_order_id,
-      razorpay_payment_id: response.razorpay_payment_id,
-      razorpay_signature:  response.razorpay_signature
-    })
-  })
-    .then(function (r) { return r.json().catch(function () { return {}; }).then(function (data) { return { ok: r.ok, data: data }; }); })
-    .then(function (res) {
-      if (!res.ok || !res.data || res.data.success !== true) {
-        rzpBtn.disabled = false;
-        rzpBtn.innerHTML = originalLabel;
-        razorpayShowStatus(
-          (res.data && res.data.message) ||
-          ("Payment could not be verified. If money was deducted, please contact support with payment ID " + response.razorpay_payment_id + "."),
-          true
-        );
-        return;
-      }
+  // Availability is a CONFIG decision only. The SDK is fetched on demand in
+  // ensureRazorpaySdk(), so whether it happens to be loaded right now says
+  // nothing about whether online payment is offered.
+  var onlineAvailable = cfg.enabled !== false;
+  if (!onlineAvailable) {
+    if (onlineOption) onlineOption.style.display = "none";
+    if (onlineRadio)  onlineRadio.checked = false;
+    if (codRadio)     codRadio.checked = true;
+  }
 
-      // Verified server-side — now (and only now) mark the local order paid.
-      var updatedOrder = null;
-      try {
-        var all = window.Commerce.getAllOrders();
-        for (var i = 0; i < all.length; i++) {
-          if (all[i].orderId === orderId) {
-            all[i].paymentStatus = "paid";
-            all[i].status        = "confirmed";
-            all[i].checkoutType  = "razorpay";
-            all[i].razorpay = {
-              orderId:    response.razorpay_order_id,
-              paymentId:  response.razorpay_payment_id,
-              signature:  response.razorpay_signature,
-              verifiedAt: new Date().toISOString()
-            };
-            updatedOrder = all[i];
-            break;
-          }
-        }
-        window.Commerce.saveAllOrders(all);
-      } catch (e) {}
+  updatePlaceOrderLabel();
+  document.querySelectorAll('[name="payment"]').forEach(function (radio) {
+    radio.addEventListener("change", updatePlaceOrderLabel);
+  });
 
-      if (window.OperationsService) {
-        try {
-          window.OperationsService.recordAnalyticsEvent("order_created", { orderId: orderId, total: launchTotal(), checkoutType: "razorpay" });
-          window.OperationsService.recordAnalyticsEvent("razorpay_payment_verified", { orderId: orderId });
-        } catch (e) {}
-      }
-
-      // Best-effort: try to auto-open WhatsApp to NAFUME's own number with the
-      // full order so the team sees it immediately. Browsers frequently block
-      // window.open() at this point (it's inside an async fetch callback, not
-      // a direct click) — that's expected, not an error. The confirmation
-      // page always shows a guaranteed manual "Notify NAFUME on WhatsApp"
-      // button as the reliable fallback for exactly this case.
-      if (updatedOrder) {
-        try {
-          var notifyMsg = buildRazorpayOrderMessage(updatedOrder);
-          window.open("https://wa.me/" + LAUNCH_CONFIG.whatsappNumber + "?text=" + encodeURIComponent(notifyMsg), "_blank");
-        } catch (e) {}
-      }
-
-      // Clear cart + one-time local offers, same as the WhatsApp flow.
-      launchCart = []; saveLaunchCart();
-      if (window.Offers) { try { window.Offers.removeLocalOfferFromCart(window.Offers.GIFT_OFFER_ID); } catch (e) {} }
-
-      window.location.href = nfPath("/pages/order/confirmation.html") + "?orderId=" + encodeURIComponent(orderId);
-    })
-    .catch(function () {
-      rzpBtn.disabled = false;
-      rzpBtn.innerHTML = originalLabel;
-      razorpayShowStatus(
-        "Payment verification failed. If money was deducted, please contact support with payment ID " + response.razorpay_payment_id + ".",
-        true
-      );
+  var btn = document.getElementById("btn-place-order");
+  if (btn) {
+    btn.addEventListener("click", function (e) {
+      // The button is type="submit"; let the form's own handler run once.
+      if (btn.form) return;
+      placeOrder(e);
     });
+  }
+
+  // Clear a field's error the moment the customer starts fixing it.
+  form.querySelectorAll("input, select, textarea").forEach(function (el) {
+    el.addEventListener("input", function () {
+      if (!el.classList.contains("has-error")) return;
+      el.classList.remove("has-error");
+      el.removeAttribute("aria-invalid");
+      var msg = el.parentNode && el.parentNode.querySelector(".field-error");
+      if (msg) msg.remove();
+    });
+  });
+
+  // ── promo code ──
+  var promoBtn   = document.getElementById("promo-apply");
+  var promoInput = document.getElementById("promo-code");
+  if (promoBtn) promoBtn.addEventListener("click", applyPromoCode);
+  if (promoInput) {
+    // Enter applies the code; it must NOT submit the checkout form.
+    promoInput.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") { e.preventDefault(); applyPromoCode(); }
+    });
+  }
 }
 
-/* ─── Checkout ⇄ account bridge (Upgrade 3) ────────────────────────────────
-   If a local account is logged in, prefill the shipping form from the saved
-   profile and show a small note. If logged out, show a non-blocking prompt to
-   log in. Never blocks guest checkout. */
+/* The CTA says exactly what tapping it does. */
+function updatePlaceOrderLabel() {
+  var btn = document.getElementById("btn-place-order");
+  if (!btn) return;
+  var method = getShippingPaymentMethod();
+  var online = !/cod|cash/i.test(method);
+  var label  = online ? "Pay Securely" : "Place COD Order";
+  var icon   = online ? "lock" : "local_shipping";
+  btn.innerHTML = '<span class="material-symbols-outlined" style="font-size:20px;">' + icon + '</span> ' + label;
+  delete btn.dataset.idleLabel;
+  renderOrderSummary();
+  renderPrepaidNote();
+  // COD removes the prepaid discount, which changes what a promo code is
+  // worth — so an applied code has to be re-quoted.
+  revalidatePromoCode();
+}
+/* ─── Checkout ⇄ account bridge ─────────────────────────────────────────────
+   Prefills the shipping form from the SIGNED-IN account (the server session),
+   so a returning customer types nothing. Guests are shown a non-blocking note
+   and can always check out without an account.
+
+   Runs asynchronously and only fills EMPTY fields, so it can never overwrite
+   something the customer has already started typing while the request was in
+   flight. */
 function initCheckoutAccountUI() {
-  if (!window.CustomerService) return;
   var form = document.getElementById("shipping-form");
   var col  = document.querySelector(".shipping-form-col");
   var sub  = document.querySelector(".shipping-subhead");
-  if (!form || !col) return;
+  if (!form || !col || !window.NafumeAPI) return;
 
   var note = document.createElement("p");
   note.id = "checkout-account-note";
-  note.style.cssText = "font-family:var(--font-body);font-size:12px;margin:0 0 16px;" +
-    "padding:10px 14px;border-radius:4px;line-height:1.5;";
-
-  if (window.CustomerService.isCustomerLoggedIn()) {
-    var d = window.CustomerService.getSavedCheckoutDetails() || {};
-    var map = { name: d.name, phone: d.phone, email: d.email, addr1: d.addr1,
-                addr2: d.addr2, city: d.city, state: d.state, pin: d.pin };
-    Object.keys(map).forEach(function (k) {
-      var el = form.querySelector('[name="' + k + '"]');
-      if (el && !el.value && map[k]) el.value = map[k];   // fill only empty fields
-    });
-    note.style.background = "#f3f7f3";
-    note.style.color = "#3a5a40";
-    note.textContent = "Using saved details from your NAFUME account. You can edit anything before placing your order.";
-  } else {
-    note.style.background = "#faf6ef";
-    note.style.color = "#7a5b1e";
-    note.innerHTML = 'Login to save your address and view order history. ' +
-      '<a href="/pages/account/account.html" style="color:#111;text-decoration:underline;">Login to your account</a> ' +
-      '(optional — you can still check out as a guest).';
-  }
-
+  note.className = "checkout-account-note";
+  note.textContent = "Checking for a saved NAFUME account…";
   if (sub && sub.parentNode === col) col.insertBefore(note, sub.nextSibling);
   else col.insertBefore(note, form);
+
+  function fillEmpty(map) {
+    Object.keys(map).forEach(function (k) {
+      var el = form.querySelector('[name="' + k + '"]');
+      if (el && !el.value && map[k]) el.value = map[k];
+    });
+  }
+
+  window.NafumeAPI.me().then(function (res) {
+    if (res.ok && res.data.authenticated && res.data.customer) {
+      var c = res.data.customer;
+      var a = c.address || {};
+      fillEmpty({
+        name: c.name, phone: c.phone, email: c.email,
+        addr1: a.line1, addr2: a.line2, city: a.city, state: a.state, pin: a.pincode
+      });
+
+      // Reflect the saved marketing choice rather than silently re-opting them in.
+      var optIn = document.getElementById("whatsapp-optin");
+      if (optIn && res.data.consent) optIn.checked = res.data.consent.whatsapp === true;
+
+      note.className = "checkout-account-note is-signed-in";
+      note.textContent = "Welcome back" + (c.name ? ", " + c.name.split(" ")[0] : "") +
+        " — we've filled in your saved details. Edit anything before placing your order.";
+      return;
+    }
+
+    note.className = "checkout-account-note is-guest";
+    note.innerHTML = 'Checking out as a guest. ' +
+      '<a href="' + nfPath("/pages/account/account.html") + '">Log in</a> ' +
+      'to reuse your saved address, or create an account after you order.';
+  });
 }
 
 // ─── Sitewide: tap & hold to show hover image on touch devices ────────────────

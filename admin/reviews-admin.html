@@ -2,126 +2,308 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8"/>
-    <link rel="icon" type="image/png" href="/assets/logo/logo-mark.png"/>
-    <link rel="apple-touch-icon" href="/assets/logo/logo-mark.png"/>
+  <link rel="icon" type="image/png" href="/assets/logo/logo-mark.png"/>
+  <link rel="apple-touch-icon" href="/assets/logo/logo-mark.png"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Reviews Admin (Local Demo) — NAFUME</title>
-  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+  <meta name="robots" content="noindex, nofollow"/>
+  <title>Review Moderation — NAFUME Admin</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: Arial, Helvetica, sans-serif; background: #f5f3ef; color: #1a1a1a; padding: 24px; }
-    .wrap { max-width: 960px; margin: 0 auto; }
-    h1 { font-size: 20px; letter-spacing: 0.04em; }
-    .warn { background: #fdecea; border: 1px solid #f5c2bd; color: #8a1c10; padding: 12px 16px; border-radius: 6px; margin: 14px 0 20px; font-size: 13px; }
-    .bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 18px; }
-    .bar button { border: 1px solid #ccc; background: #fff; padding: 8px 14px; border-radius: 20px; cursor: pointer; font-size: 12px; letter-spacing: 0.04em; }
-    .bar button.active { background: #111; color: #fff; border-color: #111; }
-    .count { margin-left: auto; font-size: 12px; color: #666; }
-    .rev { background: #fff; border: 1px solid #e7e7e7; border-radius: 8px; padding: 16px; margin-bottom: 12px; }
-    .rev-top { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-    .rev-who { font-weight: 700; font-size: 14px; }
-    .rev-meta { font-size: 12px; color: #777; }
-    .stars { color: #C5A059; letter-spacing: 1px; }
-    .pill { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; padding: 3px 8px; border-radius: 10px; font-weight: 700; }
-    .pill.published { background: #e7f6ea; color: #2e7d32; }
-    .pill.pending   { background: #fff4e0; color: #b06f00; }
-    .pill.hidden    { background: #eee; color: #777; }
-    .pill.verified  { background: #e9f3ff; color: #1565c0; }
-    .rev-title { font-weight: 700; margin: 10px 0 2px; font-size: 13px; }
-    .rev-body { font-size: 13px; color: #444; line-height: 1.55; }
-    .actions { margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
-    .actions button { border: none; border-radius: 6px; padding: 8px 14px; cursor: pointer; font-size: 12px; font-weight: 700; }
-    .b-pub { background: #2e7d32; color: #fff; }
-    .b-hide { background: #b0b0b0; color: #fff; }
-    .b-pend { background: #b06f00; color: #fff; }
-    .empty { text-align: center; color: #999; padding: 40px; font-size: 14px; }
+    body { font-family: Arial, Helvetica, sans-serif; background: #f5f3ef; color: #1a1a1a; padding: 20px 16px 60px; -webkit-text-size-adjust: 100%; }
+    .wrap { max-width: 900px; margin: 0 auto; }
+    h1 { font-size: 20px; letter-spacing: 0.04em; margin-top: 8px; }
     a.back { font-size: 12px; color: #666; text-decoration: none; }
+
+    .note { border-radius: 6px; padding: 12px 16px; margin: 14px 0 18px; font-size: 13px; line-height: 1.55; }
+    .note.info { background: #eef5ff; border: 1px solid #cfe0f5; color: #1c4e8a; }
+    .note.warn { background: #fff8e6; border: 1px solid #f0dfae; color: #7a5b1e; }
+    .note.err  { background: #fdecea; border: 1px solid #f5c2bd; color: #8a1c10; }
+    .note code { background: rgba(0,0,0,0.06); padding: 1px 5px; border-radius: 3px; }
+
+    .panel { background: #fff; border: 1px solid #e7e7e7; border-radius: 8px; padding: 18px; margin-bottom: 18px; }
+    .panel h2 { font-size: 14px; margin-bottom: 10px; }
+
+    label.lbl { display: block; font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: #888; margin-bottom: 5px; }
+    input, select { width: 100%; border: 1px solid #ccc; padding: 11px 12px; border-radius: 6px; font-size: 14px; background: #fff; min-height: 44px; }
+    input:focus, select:focus { outline: none; border-color: #111; }
+
+    button { border: none; border-radius: 6px; padding: 11px 18px; cursor: pointer; font-size: 13px; font-weight: 700; min-height: 44px; }
+    .b-primary { background: #111; color: #fff; }
+    .b-primary:disabled { background: #999; cursor: progress; }
+    .b-pub { background: #2e7d32; color: #fff; }
+    .b-hide { background: #b3261e; color: #fff; }
+    .b-ghost { background: #fff; color: #333; border: 1px solid #ccc; }
+
+    .bar { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 16px; }
+    .bar > div { flex: 1 1 190px; min-width: 0; }
+    .count { font-size: 12px; color: #666; margin-left: auto; align-self: center; }
+
+    .rev { background: #fff; border: 1px solid #e7e7e7; border-radius: 8px; padding: 16px; margin-bottom: 14px; }
+    .rev-top { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; align-items: flex-start; }
+    .stars { color: #C5A059; font-size: 17px; letter-spacing: 2px; }
+    .rev-title { font-weight: 700; font-size: 15px; margin-top: 6px; }
+    .rev-body { font-size: 13px; line-height: 1.65; margin-top: 8px; white-space: pre-wrap; word-wrap: break-word; }
+    .rev-meta { font-size: 12px; color: #777; margin-top: 8px; line-height: 1.6; }
+    .rev-photo { margin-top: 12px; max-width: 200px; border: 1px solid #e0e0e0; border-radius: 4px; display: block; }
+    .pill { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; padding: 4px 9px; border-radius: 10px; font-weight: 700; white-space: nowrap; }
+    .pill.pending { background: #fff4e0; color: #b06f00; }
+    .pill.published { background: #e7f6ea; color: #2e7d32; }
+    .pill.hidden { background: #eee; color: #666; }
+    .acts { margin-top: 14px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .rowmsg { font-size: 12px; font-weight: 700; }
+    .empty { text-align: center; color: #999; padding: 40px 20px; font-size: 14px; background: #fff; border: 1px solid #e7e7e7; border-radius: 8px; }
+    @media (max-width: 560px) { body { padding: 16px 12px 50px; } .acts button { flex: 1 1 100%; } }
   </style>
 </head>
 <body>
   <div class="wrap">
-    <a class="back" href="../index.html">← Back to site</a>
-    <h1 style="margin-top:8px;">NAFUME — Product Reviews Admin</h1>
-    <div class="warn">
-      ⚠️ <strong>Local demo admin only. Not secure for production.</strong>
-      Anyone who opens this page on this browser can moderate reviews. Replace with
-      a real, authenticated server dashboard before going live.
+    <a class="back" href="/">← Back to site</a>
+    <h1>NAFUME — Review Moderation</h1>
+
+    <div class="note info">
+      Customer reviews are saved as <strong>pending</strong> and are <strong>not shown on the
+      storefront until approved here</strong>. Reviews are free text and photos written by
+      strangers, so nothing is published automatically.
+      <br/>Only reviews tied to a real paid order can be submitted, and each is marked
+      <em>verified</em>.
     </div>
 
-    <div class="bar">
-      <button data-filter="all" class="active">All</button>
-      <button data-filter="pending">Pending</button>
-      <button data-filter="published">Published</button>
-      <button data-filter="hidden">Hidden</button>
-      <span class="count" id="count"></span>
+    <div class="note warn">
+      Access is by API token, held in this tab's <code>sessionStorage</code> and cleared when the
+      tab closes. Set <code>ADMIN_API_TOKEN</code> to a long random value.
     </div>
 
-    <div id="list"></div>
+    <div class="panel" id="auth-panel">
+      <h2>Admin access</h2>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
+        <div style="flex:1 1 260px;min-width:0;">
+          <label class="lbl" for="token">ADMIN_API_TOKEN</label>
+          <input id="token" type="password" autocomplete="off" placeholder="Paste your admin token"/>
+        </div>
+        <button class="b-primary" id="auth-btn" type="button">Connect</button>
+      </div>
+      <p class="note err" id="auth-msg" style="display:none;margin-bottom:0;"></p>
+    </div>
+
+    <div id="reviews-panel" style="display:none;">
+      <div class="bar">
+        <div>
+          <label class="lbl" for="f-status">Status</label>
+          <select id="f-status">
+            <option value="pending" selected>Pending</option>
+            <option value="published">Published</option>
+            <option value="hidden">Hidden</option>
+            <option value="">All</option>
+          </select>
+        </div>
+        <div style="flex:0 0 auto;">
+          <button class="b-ghost" id="refresh-btn" type="button">Refresh</button>
+        </div>
+        <span class="count" id="count"></span>
+      </div>
+      <p class="note err" id="list-msg" style="display:none;"></p>
+      <div id="reviews"></div>
+    </div>
   </div>
 
-  <!-- Commerce + review service (Upgrade 4) -->
-  <script src="../js/commerce/config.js"></script>
-  <script src="../js/commerce/customer-service.js"></script>
-  <script src="../js/commerce/review-service.js"></script>
-  <script>
-    var RS = window.ReviewService;
-    var filter = "all";
+<script>
+/* Review moderation against /api/admin/reviews.
+   Replaces the previous localStorage-only panel, which could not see reviews
+   submitted by real customers (those live in the database). */
+(function () {
+  "use strict";
 
-    function stars(n) { var s = ""; for (var i = 1; i <= 5; i++) s += (i <= n ? "★" : "☆"); return s; }
-    function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) {
-      return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]; }); }
-    function fmt(iso) { try { return new Date(iso).toLocaleString("en-IN"); } catch (e) { return "—"; } }
+  var TOKEN_KEY = "nf_admin_token";
+  var reviews = [];
 
-    function render() {
-      var listEl = document.getElementById("list");
-      if (!RS) { listEl.innerHTML = '<div class="empty">Review service not loaded.</div>'; return; }
-      // Seed so there is always something to show in the demo.
-      RS.seedInitialReviewsIfEmpty();
-      var all = RS.getAllReviews();
-      var rows = all.filter(function (r) { return filter === "all" ? true : r.status === filter; });
-      document.getElementById("count").textContent = rows.length + " of " + all.length + " review(s)";
+  function el(id) { return document.getElementById(id); }
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c];
+    });
+  }
+  function fmtDate(iso) {
+    if (!iso) return "—";
+    try { return new Date(iso).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" }); }
+    catch (e) { return "—"; }
+  }
+  function stars(n) {
+    n = Math.max(0, Math.min(5, parseInt(n, 10) || 0));
+    return "★".repeat(n) + "☆".repeat(5 - n);
+  }
 
-      if (!rows.length) { listEl.innerHTML = '<div class="empty">No reviews in this view.</div>'; return; }
+  function token() { try { return sessionStorage.getItem(TOKEN_KEY) || ""; } catch (e) { return ""; } }
+  function setToken(v) {
+    try { v ? sessionStorage.setItem(TOKEN_KEY, v) : sessionStorage.removeItem(TOKEN_KEY); } catch (e) {}
+  }
 
-      listEl.innerHTML = rows.map(function (r) {
-        var who = esc(r.customerName) + (r.customerLocation ? " · " + esc(r.customerLocation) : "");
-        return '<div class="rev">' +
-          '<div class="rev-top">' +
-            '<div><div class="rev-who">' + who + ' <span class="stars">' + stars(r.rating) + '</span></div>' +
-              '<div class="rev-meta">' + esc(r.productId) + ' · ' + fmt(r.createdAt) + ' · ' + esc(r.source) + '</div></div>' +
-            '<div style="display:flex;gap:6px;align-items:flex-start;flex-wrap:wrap;">' +
-              '<span class="pill ' + r.status + '">' + r.status + '</span>' +
-              (r.verifiedBuyer ? '<span class="pill verified">verified</span>' : '') +
-            '</div>' +
-          '</div>' +
-          (r.title ? '<div class="rev-title">' + esc(r.title) + '</div>' : '') +
-          '<div class="rev-body">' + esc(r.body) + '</div>' +
-          '<div class="actions">' +
-            (r.status !== "published" ? '<button class="b-pub" data-id="' + r.reviewId + '" data-st="published">Approve / Publish</button>' : '') +
-            (r.status !== "hidden" ? '<button class="b-hide" data-id="' + r.reviewId + '" data-st="hidden">Hide</button>' : '') +
-            (r.status !== "pending" ? '<button class="b-pend" data-id="' + r.reviewId + '" data-st="pending">Mark Pending</button>' : '') +
-          '</div>' +
-        '</div>';
-      }).join("");
+  function showMsg(id, text, kind) {
+    var box = el(id);
+    box.style.display = "block";
+    box.className = "note " + (kind || "err");
+    box.textContent = text;
+  }
+  function hideMsg(id) { el(id).style.display = "none"; }
 
-      listEl.querySelectorAll("button[data-id]").forEach(function (b) {
-        b.addEventListener("click", function () {
-          RS.updateReviewStatus(b.getAttribute("data-id"), b.getAttribute("data-st"));
-          render();
+  function api(path, options) {
+    options = options || {};
+    var init = { method: options.method || "GET", headers: { "Authorization": "Bearer " + token() } };
+    if (options.body) {
+      init.headers["Content-Type"] = "application/json";
+      init.body = JSON.stringify(options.body);
+    }
+    return fetch(path, init)
+      .then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (data) {
+          return { ok: r.ok && data.success !== false, status: r.status, data: data,
+                   message: data.message || null };
         });
+      })
+      .catch(function () {
+        return { ok: false, status: 0, data: {},
+                 message: "Could not reach the server. Check your connection." };
       });
+  }
+
+  function connect() {
+    var value = el("token").value.trim();
+    if (!value) { showMsg("auth-msg", "Please paste your admin token."); return; }
+
+    var btn = el("auth-btn");
+    btn.disabled = true; btn.textContent = "Connecting…";
+    hideMsg("auth-msg");
+    setToken(value);
+
+    api("/api/admin/reviews?limit=1").then(function (res) {
+      btn.disabled = false; btn.textContent = "Connect";
+      if (!res.ok) {
+        setToken("");
+        if (res.status === 401) showMsg("auth-msg", "That token was not accepted.");
+        else if (res.status === 503) showMsg("auth-msg", res.message ||
+          "Admin API is not configured. Set ADMIN_API_TOKEN on the deployment.");
+        else showMsg("auth-msg", res.message || "Could not connect.");
+        return;
+      }
+      el("token").value = "";
+      el("auth-panel").style.display = "none";
+      el("reviews-panel").style.display = "";
+      load();
+    });
+  }
+
+  function load() {
+    hideMsg("list-msg");
+    el("reviews").innerHTML = '<div class="empty">Loading reviews…</div>';
+
+    var params = ["limit=100"];
+    if (el("f-status").value) params.push("status=" + encodeURIComponent(el("f-status").value));
+
+    api("/api/admin/reviews?" + params.join("&")).then(function (res) {
+      if (!res.ok) {
+        el("reviews").innerHTML = "";
+        if (res.status === 401) {
+          setToken("");
+          el("reviews-panel").style.display = "none";
+          el("auth-panel").style.display = "";
+          showMsg("auth-msg", "Your session ended. Please enter the token again.");
+          return;
+        }
+        showMsg("list-msg", res.message || "Could not load reviews.");
+        return;
+      }
+      reviews = res.data.reviews || [];
+      render();
+    });
+  }
+
+  function render() {
+    el("count").textContent = reviews.length + " review(s)";
+
+    if (!reviews.length) {
+      el("reviews").innerHTML = '<div class="empty">Nothing here right now.</div>';
+      return;
     }
 
-    document.querySelectorAll(".bar button[data-filter]").forEach(function (b) {
-      b.addEventListener("click", function () {
-        filter = b.getAttribute("data-filter");
-        document.querySelectorAll(".bar button[data-filter]").forEach(function (x) { x.classList.remove("active"); });
-        b.classList.add("active");
-        render();
-      });
-    });
+    el("reviews").innerHTML = reviews.map(function (r) {
+      return '<div class="rev" data-review="' + esc(r.id) + '">' +
+        '<div class="rev-top">' +
+          '<div style="min-width:0;">' +
+            '<div class="stars">' + stars(r.rating) + '</div>' +
+            (r.title ? '<div class="rev-title">' + esc(r.title) + '</div>' : '') +
+          '</div>' +
+          '<div style="display:flex;gap:6px;flex-wrap:wrap;">' +
+            '<span class="pill ' + esc(r.status) + '">' + esc(r.status) + '</span>' +
+            (r.verified ? '<span class="pill published">verified</span>' : '') +
+          '</div>' +
+        '</div>' +
+        (r.body ? '<div class="rev-body">' + esc(r.body) + '</div>' : '') +
+        (r.photo ? '<img class="rev-photo" src="' + esc(r.photo) + '" alt="Customer photo"/>' : '') +
+        '<div class="rev-meta">' +
+          esc(r.productName || r.productId) + ' · order ' + esc(r.orderId || "—") + '<br/>' +
+          esc(r.authorName || "—") + ' · ' + esc(r.authorEmail || "—") + '<br/>' +
+          'Submitted ' + fmtDate(r.createdAt) +
+        '</div>' +
+        '<div class="acts">' +
+          (r.status !== "published" ? '<button class="b-pub act-publish" type="button">Publish</button>' : '') +
+          (r.status !== "hidden" ? '<button class="b-hide act-hide" type="button">Hide</button>' : '') +
+          (r.status !== "pending" ? '<button class="b-ghost act-pending" type="button">Back to pending</button>' : '') +
+          '<span class="rowmsg"></span>' +
+        '</div>' +
+      '</div>';
+    }).join("");
 
-    document.addEventListener("DOMContentLoaded", render);
-  </script>
+    wireRows();
+  }
+
+  function wireRows() {
+    document.querySelectorAll(".rev").forEach(function (row) {
+      var reviewId = row.getAttribute("data-review");
+      var msg = row.querySelector(".rowmsg");
+
+      function act(action) {
+        var buttons = row.querySelectorAll("button");
+        buttons.forEach(function (b) { b.disabled = true; });
+        msg.style.color = "#777";
+        msg.textContent = "Saving…";
+
+        api("/api/admin/reviews", { method: "POST", body: { reviewId: reviewId, action: action } })
+          .then(function (res) {
+            buttons.forEach(function (b) { b.disabled = false; });
+            if (!res.ok) {
+              msg.style.color = "#b3261e";
+              msg.textContent = res.message || "Could not save.";
+              return;
+            }
+            msg.style.color = "#2e7d32";
+            msg.textContent = "Saved ✓";
+            for (var i = 0; i < reviews.length; i++) {
+              if (reviews[i].id === reviewId) { reviews[i].status = res.data.status; break; }
+            }
+            // If a filter is active the row no longer belongs here — reload.
+            setTimeout(el("f-status").value ? load : render, 700);
+          });
+      }
+
+      var pub = row.querySelector(".act-publish");
+      if (pub) pub.addEventListener("click", function () { act("publish"); });
+      var hide = row.querySelector(".act-hide");
+      if (hide) hide.addEventListener("click", function () { act("hide"); });
+      var back = row.querySelector(".act-pending");
+      if (back) back.addEventListener("click", function () { act("pending"); });
+    });
+  }
+
+  el("auth-btn").addEventListener("click", connect);
+  el("token").addEventListener("keydown", function (e) { if (e.key === "Enter") connect(); });
+  el("refresh-btn").addEventListener("click", load);
+  el("f-status").addEventListener("change", load);
+
+  if (token()) {
+    el("auth-panel").style.display = "none";
+    el("reviews-panel").style.display = "";
+    load();
+  }
+})();
+</script>
 </body>
 </html>

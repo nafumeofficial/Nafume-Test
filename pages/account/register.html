@@ -17,8 +17,12 @@
   <link href="../../css/style.css" rel="stylesheet"/>
   <link href="../../css/launch.css" rel="stylesheet"/>
   <script id="tailwind-config">
-    tailwind.config = {
-      theme: {
+    /* The Tailwind CDN is a third party. If it fails to load, 	ailwind is
+       undefined and this block used to throw an uncaught ReferenceError into
+       the console on every page. Guarded so a CDN outage degrades the styling
+       instead of raising a runtime error. */
+    if (typeof tailwind !== "undefined") {
+    tailwind.config = {      theme: {
         extend: {
           colors: {
             "surface": "#F9F5F0",
@@ -36,6 +40,7 @@
           }
         }
       }
+    }
     }
   </script>
 </head>
@@ -64,7 +69,7 @@
 
   <!-- ── ANNOUNCEMENT BAR ────────────────────────────────────────── -->
   <div class="nf-ann">
-    <div class="nf-ann-track">SUMMER SALE &nbsp;•&nbsp; &#8377;799 EACH &nbsp;•&nbsp; FREE SHIPPING ABOVE &#8377;999 &nbsp;•&nbsp; ORDERS CONFIRMED ON WHATSAPP &nbsp;•&nbsp; FOLLOW NAFUME ON INSTAGRAM &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;SUMMER SALE &nbsp;•&nbsp; &#8377;799 EACH &nbsp;•&nbsp; FREE SHIPPING ABOVE &#8377;999 &nbsp;•&nbsp; ORDERS CONFIRMED ON WHATSAPP &nbsp;•&nbsp; FOLLOW NAFUME ON INSTAGRAM &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</div>
+    <div class="nf-ann-track">SUMMER SALE &nbsp;•&nbsp; &#8377;799 EACH &nbsp;•&nbsp; FREE SHIPPING ABOVE &#8377;999 &nbsp;•&nbsp; SECURE ONLINE PAYMENT &amp; COD &nbsp;•&nbsp; FOLLOW NAFUME ON INSTAGRAM &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;SUMMER SALE &nbsp;•&nbsp; &#8377;799 EACH &nbsp;•&nbsp; FREE SHIPPING ABOVE &#8377;999 &nbsp;•&nbsp; SECURE ONLINE PAYMENT &amp; COD &nbsp;•&nbsp; FOLLOW NAFUME ON INSTAGRAM &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</div>
   </div>
 
   <!-- ── HEADER ─────────────────────────────────────────────────── -->
@@ -142,84 +147,73 @@
   <!-- ── MAIN CONTENT ───────────────────────────────────────────── -->
   <main class="flex-grow">
 
-    <!-- Page title -->
-    <div class="acct-page-header">
-      <h1 class="acct-page-title">Register</h1>
-    </div>
+    <div class="nf-auth-wrap">
 
-    <!-- Breadcrumb strip -->
-    <div class="acct-breadcrumb-wrap">
-      <nav class="acct-breadcrumb-nav" aria-label="Breadcrumb">
+      <nav class="acct-breadcrumb-nav" aria-label="Breadcrumb" style="margin-bottom:22px;">
         <a href="/" class="acct-bc-link">Home</a>
         <span class="acct-bc-sep" aria-hidden="true">&#8250;</span>
         <span class="acct-bc-current">Create Account</span>
       </nav>
-    </div>
 
-    <!-- Register form -->
-    <div class="reg-form-section">
-      <h2 class="acct-col-heading">Register</h2>
+      <h1 class="nf-auth-title" id="reg-title">Create your NAFUME account</h1>
+      <p class="nf-auth-sub" id="reg-subtitle">
+        Track your orders, save your address, and check out faster next time.
+      </p>
+
+      <!-- Post-checkout banner: filled in by the script when the customer
+           arrived here straight after placing an order. -->
+      <p class="nf-auth-status is-info" id="reg-order-note" style="display:none;"></p>
+
+      <!-- Live status: validation summary, duplicate account, network error. -->
+      <p class="nf-auth-status" id="reg-status" role="status" aria-live="polite" style="display:none;"></p>
 
       <form id="reg-form" novalidate autocomplete="on">
-        <input
-          id="reg-first-name"
-          class="acct-input"
-          type="text"
-          placeholder="First Name"
-          autocomplete="given-name"
-        />
-        <input
-          id="reg-last-name"
-          class="acct-input"
-          type="text"
-          placeholder="Last Name"
-          autocomplete="family-name"
-        />
-        <input
-          id="reg-email"
-          class="acct-input"
-          type="email"
-          placeholder="Email"
-          autocomplete="email"
-        />
-        <input
-          id="reg-password"
-          class="acct-input"
-          type="password"
-          placeholder="Password"
-          autocomplete="new-password"
-        />
 
-        <p class="acct-register-desc" style="margin-top:20px;">
-          Sign up for early Sale access plus tailored new arrivals, trends and promotions. To opt out, click unsubscribe in our emails.
-        </p>
+        <div class="nf-auth-field">
+          <label class="nf-auth-label" for="reg-name">Full name</label>
+          <input id="reg-name" name="name" class="nf-auth-input" type="text"
+                 autocomplete="name" placeholder="Your full name" required/>
+          <p class="nf-auth-error" id="err-name"></p>
+        </div>
+
+        <div class="nf-auth-field">
+          <label class="nf-auth-label" for="reg-email">Email</label>
+          <input id="reg-email" name="email" class="nf-auth-input" type="email"
+                 autocomplete="email" inputmode="email" placeholder="your@email.com" required/>
+          <p class="nf-auth-error" id="err-email"></p>
+        </div>
+
+        <div class="nf-auth-field">
+          <label class="nf-auth-label" for="reg-phone">Mobile number</label>
+          <input id="reg-phone" name="phone" class="nf-auth-input" type="tel"
+                 autocomplete="tel" inputmode="numeric" maxlength="10"
+                 placeholder="10-digit mobile number" required/>
+          <p class="nf-auth-error" id="err-phone"></p>
+        </div>
+
+        <div class="nf-auth-field">
+          <label class="nf-auth-label" for="reg-password">Password</label>
+          <input id="reg-password" name="password" class="nf-auth-input" type="password"
+                 autocomplete="new-password" placeholder="At least 8 characters" required/>
+          <p class="nf-auth-error" id="err-password"></p>
+          <p class="nf-review-hint">At least 8 characters, including a letter and a number.</p>
+        </div>
 
         <div class="reg-checkbox-row">
-          <input
-            type="checkbox"
-            class="reg-checkbox"
-            id="reg-agree"
-          />
+          <input type="checkbox" class="reg-checkbox" id="reg-agree"/>
           <label class="reg-checkbox-label" for="reg-agree">
-            I agree with the <a href="../legal/terms-conditions.html">Terms &amp; conditions</a>
+            I agree to NAFUME's <a href="../legal/terms-conditions.html" target="_blank">Terms &amp; Conditions</a>
+            and <a href="../legal/privacy-policy.html" target="_blank">Privacy Policy</a>
           </label>
         </div>
 
-        <button
-          type="submit"
-          class="reg-submit-btn"
-          id="reg-submit"
-          disabled
-        >Register</button>
-
-        <p class="reg-success-msg" id="reg-success" role="status">
-          Thank you for registering. This feature will be available soon.
-        </p>
+        <button type="submit" class="nf-auth-submit" id="reg-submit" disabled>Create account</button>
       </form>
 
-      <p style="margin-top:32px;font-size:13px;color:#888;font-family:var(--font-body);">
-        Already have an account? <a href="account.html" style="color:#111;text-decoration:underline;">Sign In</a>
+      <p class="nf-auth-alt">
+        Already have an account? <a href="account.html">Sign in</a>
       </p>
+
     </div>
 
   </main>
@@ -231,6 +225,7 @@
   <script src="../../js/state.js"></script>
   <script src="../../js/app.js"></script>
   <script src="../../js/commerce/config.js"></script>
+  <script src="../../js/commerce/api-client.js"></script>
   <script src="../../js/commerce/commerce-service.js"></script>
   <script src="../../js/commerce/customer-service.js"></script>
   <script src="../../js/commerce/offer-service.js"></script>
@@ -238,23 +233,173 @@
   <script src="../../js/commerce/operations-service.js"></script>
 
   <script>
+    /* ── Registration ───────────────────────────────────────────────────────
+       Real account creation against POST /api/account/register.
+
+       The post-checkout path is the important one: when the customer arrives
+       from the confirmation page, the name/email/phone they just typed are
+       pre-filled from the prefill the verify-payment response handed back, so
+       the only thing left to enter is a password. Registering attaches
+       credentials to the customer record their order already created — it does
+       not make a second customer — so their order history is right immediately.
+
+       Password handling is entirely server-side (scrypt); this page never
+       stores, caches or logs it.                                              */
     (function () {
-      var checkbox = document.getElementById('reg-agree');
-      var btn      = document.getElementById('reg-submit');
-      var form     = document.getElementById('reg-form');
-      var success  = document.getElementById('reg-success');
+      "use strict";
 
-      checkbox.addEventListener('change', function () {
-        btn.disabled = !this.checked;
+      var form     = document.getElementById("reg-form");
+      var agree    = document.getElementById("reg-agree");
+      var submit   = document.getElementById("reg-submit");
+      var status   = document.getElementById("reg-status");
+      var orderNote= document.getElementById("reg-order-note");
+      var params   = new URLSearchParams(window.location.search);
+
+      var FIELDS = ["name", "email", "phone", "password"];
+
+      function el(id) { return document.getElementById(id); }
+
+      function showStatus(message, kind, html) {
+        status.style.display = "block";
+        status.className = "nf-auth-status is-" + (kind || "info");
+        if (html) status.innerHTML = message; else status.textContent = message;
+        try { status.scrollIntoView({ behavior: "smooth", block: "nearest" }); } catch (e) {}
+      }
+      function clearStatus() { status.style.display = "none"; status.textContent = ""; }
+
+      function clearFieldErrors() {
+        FIELDS.forEach(function (f) {
+          el("err-" + f).textContent = "";
+          el("reg-" + f).classList.remove("has-error");
+        });
+      }
+      function showFieldErrors(fields) {
+        var first = null;
+        Object.keys(fields || {}).forEach(function (f) {
+          var input = el("reg-" + f), msg = el("err-" + f);
+          if (!input || !msg) return;
+          input.classList.add("has-error");
+          msg.textContent = fields[f];
+          if (!first) first = input;
+        });
+        if (first) { try { first.focus(); } catch (e) {} }
+      }
+
+      /* ── prefill from the order just placed ───────────────────────────── */
+      function applyPrefill() {
+        if (!window.NafumeAPI) return;
+        var p = window.NafumeAPI.recallAccountPrefill();
+        if (!p) return;
+
+        if (p.name)  el("reg-name").value  = p.name;
+        if (p.email) el("reg-email").value = p.email;
+        if (p.phone) el("reg-phone").value = p.phone;
+
+        var orderId = params.get("orderId") || p.orderId;
+        if (params.get("from") === "order" && orderId) {
+          document.getElementById("reg-title").textContent = "Create your account to track this order";
+          document.getElementById("reg-subtitle").textContent =
+            "We've filled in the details from your order — just choose a password.";
+          orderNote.style.display = "block";
+          orderNote.textContent = "Order " + orderId + " will be linked to this account automatically.";
+        }
+        // Focus the only field they still need to fill.
+        try { el("reg-password").focus({ preventScroll: true }); } catch (e) {}
+      }
+
+      /* ── already signed in? ───────────────────────────────────────────── */
+      function checkExistingSession() {
+        if (!window.NafumeAPI) return;
+        window.NafumeAPI.me().then(function (res) {
+          if (res.ok && res.data.authenticated) {
+            showStatus('You are already signed in. <a href="account.html">Go to your account</a>.', "success", true);
+            form.style.display = "none";
+          }
+        });
+      }
+
+      /* ── client-side validation (mirrors api/_lib/validate.js) ────────── */
+      function validate() {
+        var errors = {};
+        var name  = el("reg-name").value.replace(/\s+/g, " ").trim();
+        var email = el("reg-email").value.trim();
+        var phone = el("reg-phone").value.replace(/\D/g, "").slice(-10);
+        var pw    = el("reg-password").value;
+
+        if (!name || !/[A-Za-zÀ-ɏऀ-ॿ]/.test(name)) errors.name = "Please enter your full name.";
+        if (!/^[^\s@]+@[^\s@]+\.[A-Za-z]{2,}$/.test(email)) errors.email = "Please enter a valid email address.";
+        if (phone.length !== 10 || !/^[6-9]/.test(phone)) errors.phone = "Please enter a valid 10-digit Indian mobile number.";
+        if (pw.length < 8) errors.password = "Password must be at least 8 characters.";
+        else if (!/[A-Za-z]/.test(pw) || !/[0-9]/.test(pw)) errors.password = "Password must include at least one letter and one number.";
+
+        return { errors: errors, values: { name: name, email: email, phone: phone, password: pw } };
+      }
+
+      /* ── submit ───────────────────────────────────────────────────────── */
+      agree.addEventListener("change", function () { submit.disabled = !this.checked; });
+
+      FIELDS.forEach(function (f) {
+        el("reg-" + f).addEventListener("input", function () {
+          el("reg-" + f).classList.remove("has-error");
+          el("err-" + f).textContent = "";
+        });
       });
 
-      form.addEventListener('submit', function (e) {
+      form.addEventListener("submit", function (e) {
         e.preventDefault();
-        if (!checkbox.checked) return;
-        btn.disabled = true;
-        success.style.display = 'block';
-        success.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        if (!agree.checked) return;
+
+        clearStatus();
+        clearFieldErrors();
+
+        var check = validate();
+        if (Object.keys(check.errors).length) {
+          showFieldErrors(check.errors);
+          showStatus("Please correct the highlighted fields.", "error");
+          return;
+        }
+
+        submit.disabled = true;
+        submit.textContent = "Creating your account…";
+
+        window.NafumeAPI.register(check.values).then(function (res) {
+          submit.disabled = false;
+          submit.textContent = "Create account";
+
+          if (!res.ok) {
+            if (res.data && res.data.error === "account_exists") {
+              showStatus(
+                res.message + ' <a href="account.html">Sign in instead</a>.',
+                "error", true);
+              return;
+            }
+            if (res.fields) showFieldErrors(res.fields);
+            showStatus(res.message || "We couldn't create your account. Please try again.", "error");
+            return;
+          }
+
+          window.NafumeAPI.clearAccountPrefill();
+          form.style.display = "none";
+          showStatus(
+            "Your account is ready" +
+            (res.data.orderCount ? " — " + res.data.orderCount + " order" +
+              (res.data.orderCount === 1 ? " is" : "s are") + " already linked to it." : ".") +
+            ' <a href="account.html">Go to your account</a>.',
+            "success", true);
+
+          try {
+            if (window.OperationsService) {
+              window.OperationsService.recordAnalyticsEvent("account_created",
+                { fromOrder: params.get("from") === "order" });
+            }
+          } catch (e2) {}
+
+          setTimeout(function () { window.location.href = "account.html"; }, 2200);
+        });
       });
+
+      applyPrefill();
+      checkExistingSession();
     })();
   </script>
 

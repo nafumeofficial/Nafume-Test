@@ -67,12 +67,80 @@
   function getAllReviews() { return readJSON(REVIEWS_KEY, []) || []; }
   function saveAllReviews(list) { return writeJSON(REVIEWS_KEY, list); }
 
+  /* ── server-side reviews ───────────────────────────────────────────────────
+     Real customer reviews are submitted through /pages/order/review and stored
+     in the database, where they stay `pending` until a moderator publishes
+     them. Without this, a published review would never appear on a product
+     page — the storefront would still be showing only the locally seeded ones.
+
+     Fetched reviews are held IN MEMORY for the page's lifetime and never
+     written to localStorage: the database is the source of truth, and caching
+     moderated content locally would let a hidden review linger.             */
+
+  var serverCache = {};        // productId -> [normalized review]
+  var serverPending = {};      // productId -> Promise (de-duplicates in-flight requests)
+
+  function normalizeServerReview(r) {
+    return {
+      reviewId:      r.id,
+      productId:     null,     // set by the caller — the API groups by product
+      rating:        r.rating,
+      title:         r.title || "",
+      body:          r.body || "",
+      photo:         r.photo || null,
+      customerName:  r.author,
+      verifiedBuyer: !!r.verified,
+      status:        "published",
+      createdAt:     r.createdAt,
+      source:        "server"
+    };
+  }
+
+  /* hydrateProduct(productId, onUpdate)
+     Fetches published reviews for one product. Calls onUpdate() only when
+     something actually changed, so callers can re-render without flicker.
+     Never throws and never blocks rendering — the page shows what it has,
+     then improves when the response arrives. */
+  function hydrateProduct(productId, onUpdate) {
+    if (!productId || !global.NafumeAPI) return;
+    if (serverPending[productId]) return;
+
+    serverPending[productId] = global.NafumeAPI.productReviews(productId)
+      .then(function (res) {
+        delete serverPending[productId];
+        if (!res.ok || !Array.isArray(res.data.reviews)) return;
+
+        serverCache[productId] = res.data.reviews.map(function (r) {
+          var n = normalizeServerReview(r);
+          n.productId = productId;
+          return n;
+        });
+        if (typeof onUpdate === "function") { try { onUpdate(); } catch (e) {} }
+      })
+      .catch(function () { delete serverPending[productId]; });
+  }
+
+  function getServerReviews(productId) {
+    return serverCache[productId] || [];
+  }
+
   function getReviewsByProductId(productId, includeAll) {
     if (!productId) return [];
-    return getAllReviews().filter(function (r) {
+
+    var local = getAllReviews().filter(function (r) {
       if (r.productId !== productId) return false;
       return includeAll ? true : r.status === "published";
-    }).sort(function (a, b) {
+    });
+
+    // Server reviews are always published (the API returns nothing else) and
+    // are appended, de-duplicated by id in case a local copy also exists.
+    var seen = {};
+    local.forEach(function (r) { if (r.reviewId) seen[r.reviewId] = true; });
+    var merged = local.concat(getServerReviews(productId).filter(function (r) {
+      return !seen[r.reviewId];
+    }));
+
+    return merged.sort(function (a, b) {
       // verified first, then newest
       if (!!b.verifiedBuyer !== !!a.verifiedBuyer) return b.verifiedBuyer ? 1 : -1;
       return new Date(b.createdAt) - new Date(a.createdAt);
@@ -322,14 +390,21 @@
     canCustomerReviewProduct:  canCustomerReviewProduct,
     getFeaturedReviews:        getFeaturedReviews,
     seedInitialReviewsIfEmpty: seedInitialReviewsIfEmpty,
+    // Server-backed reviews (the real ones)
+    hydrateProduct:            hydrateProduct,
+    getServerReviews:          getServerReviews,
     DEFAULT_REVIEW_STATUS:     DEFAULT_REVIEW_STATUS
   };
 
-  // ── Future integration seams (NOT implemented) ───────────────────────────
-  // TODO[reviews-provider]: replace the localStorage store above with one of:
-  //   • Shopify Product Reviews / metafields   • Judge.me API   • Loox API
-  // TODO[review-requests]: trigger post-delivery review-request emails/SMS.
-  // TODO[verified-sync]: confirm verifiedBuyer from real Shopify order data.
-  // TODO[moderation]: move moderation from reviews-admin.html to a secure
-  //   server dashboard (never trust client-side moderation in production).
+  /* ── Where reviews live now ───────────────────────────────────────────────
+     Real customer reviews are captured at /pages/order/review, stored in the
+     `reviews` table by POST /api/reviews/submit, moderated in
+     admin/reviews-admin.html via /api/admin/reviews, and read back for the
+     storefront by GET /api/reviews/list (published only). hydrateProduct()
+     above pulls them onto product pages.
+
+     The localStorage store that remains here serves the seeded starter reviews
+     and keeps the older on-page "write a review" widget working offline. It is
+     display-only: nothing in it can affect an order, a payment, or what is
+     published, and the database is authoritative for everything real.       */
 })(window);

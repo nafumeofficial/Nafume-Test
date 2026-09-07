@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <link rel="icon" type="image/png" href="/assets/logo/logo-mark.png"/>
+  <link rel="apple-touch-icon" href="/assets/logo/logo-mark.png"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Write a Review — NAFUME Artisan Luxe</title>
+  <meta name="robots" content="noindex, nofollow"/>
+  <meta name="description" content="Tell us what you think of your NAFUME fragrance and get a discount on your next order."/>
+  <link rel="stylesheet" href="../../css/launch.css"/>
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+</head>
+<body>
+
+  <div id="launch-overlay" class="lp-overlay" onclick="closeCart()"></div>
+  <div id="launch-toast" class="lp-toast" role="alert" aria-live="polite"></div>
+
+  <div id="launch-cart-drawer" class="lp-cart-drawer" role="dialog" aria-modal="true" aria-label="Shopping Cart">
+    <div class="cart-drawer-head">
+      <div>
+        <p class="cart-drawer-title">Your Cart</p>
+        <p class="cart-drawer-count" id="cart-drawer-count">0 items</p>
+      </div>
+      <button class="cart-close-btn" onclick="closeCart()" aria-label="Close cart">
+        <span class="material-symbols-outlined">close</span>
+      </button>
+    </div>
+    <div class="cart-drawer-items no-scrollbar" id="launch-cart-items"></div>
+    <div class="cart-drawer-footer" id="launch-cart-footer"></div>
+  </div>
+
+  <!-- Mobile nav drawer -->
+  <div class="nf-mobile-drawer" id="nf-mobile-drawer">
+    <div class="nf-drawer-head">
+      <a href="/" class="nf-logo" style="font-size:16px;letter-spacing:0.22em;">NAFUME</a>
+      <button class="nf-icon-btn" onclick="nfMenuClose()" aria-label="Close menu">
+        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <nav class="nf-drawer-nav">
+      <a href="/" class="nf-drawer-link">Home</a>
+      <a href="../collections/shop.html" class="nf-drawer-link">New Launches</a>
+      <a href="../products/seduction.html" class="nf-drawer-link">Seduction</a>
+      <a href="../products/dark-oud.html" class="nf-drawer-link">Dark Oud</a>
+      <a href="../products/red-spirit.html" class="nf-drawer-link">Red Spirit</a>
+      <a href="../products/aqua-manthan.html" class="nf-drawer-link">Aqua Manthan</a>
+      <a href="../products/all-day-misfit.html" class="nf-drawer-link">All Day</a>
+    </nav>
+  </div>
+  <div class="nf-drawer-overlay" id="nf-drawer-overlay" onclick="nfMenuClose()"></div>
+
+  <div class="nf-ann">
+    <div class="nf-ann-track">SUMMER SALE &nbsp;•&nbsp; &#8377;799 EACH &nbsp;•&nbsp; FREE SHIPPING ABOVE &#8377;999 &nbsp;•&nbsp; SECURE ONLINE PAYMENT &amp; COD &nbsp;•&nbsp; FOLLOW NAFUME ON INSTAGRAM &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;SUMMER SALE &nbsp;•&nbsp; &#8377;799 EACH &nbsp;•&nbsp; FREE SHIPPING ABOVE &#8377;999 &nbsp;•&nbsp; SECURE ONLINE PAYMENT &amp; COD &nbsp;•&nbsp; FOLLOW NAFUME ON INSTAGRAM &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</div>
+  </div>
+
+  <header class="nf-header" id="main-header">
+    <div class="nf-logo-row">
+      <div class="nf-header-left">
+        <button class="nf-icon-btn nf-hamburger-btn" onclick="nfMenuOpen()" aria-label="Open menu">
+          <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+        </button>
+        <a href="/" class="nf-icon-btn nf-search-btn" aria-label="Browse website">
+          <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        </a>
+      </div>
+      <a href="/" class="nf-logo">NAFUME</a>
+      <div class="nf-header-right">
+        <button class="nf-icon-btn" onclick="openCart()" aria-label="View cart">
+          <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 01-8 0"/></svg>
+          <span class="nf-cart-badge lp-cart-badge">0</span>
+        </button>
+      </div>
+    </div>
+    <nav class="nf-nav-row" aria-label="Main navigation">
+      <a href="/" class="nf-nav-link">HOME</a>
+      <a href="../collections/shop.html" class="nf-nav-link">NEW LAUNCHES</a>
+      <a href="../products/seduction.html" class="nf-nav-link">SEDUCTION</a>
+      <a href="../products/dark-oud.html" class="nf-nav-link">DARK OUD</a>
+      <a href="../products/red-spirit.html" class="nf-nav-link">RED SPIRIT</a>
+      <a href="../products/aqua-manthan.html" class="nf-nav-link">AQUA MANTHAN</a>
+      <a href="../products/all-day-misfit.html" class="nf-nav-link">ALL DAY</a>
+    </nav>
+  </header>
+
+  <main class="nf-review-page">
+    <h1 class="nf-review-title">Write a review</h1>
+    <p class="nf-review-sub" id="review-intro">
+      Tell us how your fragrance is wearing — and we'll send you a discount code for your next order.
+    </p>
+    <div id="review-root"></div>
+  </main>
+
+  <div id="global-footer"></div>
+
+  <script src="../../js/commerce/config.js"></script>
+  <script src="../../js/commerce/api-client.js"></script>
+  <script src="../../js/commerce/commerce-service.js"></script>
+  <script src="../../js/commerce/offer-service.js"></script>
+  <script src="../../js/launch.js"></script>
+
+  <script>
+  /* ── Post-delivery review form ──────────────────────────────────────────
+     Reached from the review-request email (?orderId=…), from the account page,
+     or by typing an order id.
+
+     Eligibility is checked by the server BEFORE the form renders, using exactly
+     the rules the submit endpoint enforces (api/_lib/review-access.js), so the
+     customer is never invited to write a review that will then be rejected.
+
+     Ownership: a signed-in customer is authorised by their session; a guest
+     supplies the email or phone the order was placed with. That contact detail
+     is remembered from checkout, so the common case asks for nothing.
+
+     Photos are read locally, downscaled, and sent as a data URL — the server
+     re-validates the type against the actual bytes before storing anything.
+     ─────────────────────────────────────────────────────────────────────── */
+  (function () {
+    "use strict";
+
+    var API   = window.NafumeAPI;
+    var root  = document.getElementById("review-root");
+    var params = new URLSearchParams(window.location.search);
+    var orderId = (params.get("orderId") || "").trim();
+
+    var state = { order: null, products: [], reward: null, photo: null, contact: "" };
+
+    function esc(s) {
+      return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+        return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c];
+      });
+    }
+
+    function renderState(html, cls) {
+      root.innerHTML = '<div class="nf-review-state ' + (cls || "") + '">' + html + '</div>';
+    }
+
+    /* ── step 1: which order? ─────────────────────────────────────────────── */
+
+    function renderLookupForm(message) {
+      root.innerHTML =
+        '<form class="nf-review-card" id="lookup-form" novalidate>' +
+          (message ? '<p class="nf-auth-status is-error">' + esc(message) + '</p>' : '') +
+          '<div class="nf-review-field">' +
+            '<label class="nf-review-label" for="lk-order">Order ID</label>' +
+            '<input id="lk-order" class="nf-review-input" type="text" placeholder="NF-12345678-123" ' +
+              'value="' + esc(orderId) + '" required/>' +
+          '</div>' +
+          '<div class="nf-review-field">' +
+            '<label class="nf-review-label" for="lk-contact">Email or mobile used for the order</label>' +
+            '<input id="lk-contact" class="nf-review-input" type="text" ' +
+              'placeholder="you@example.com or 9876543210" required/>' +
+          '</div>' +
+          '<button type="submit" class="nf-review-submit" id="lk-submit">Find my order</button>' +
+        '</form>';
+
+      document.getElementById("lookup-form").addEventListener("submit", function (e) {
+        e.preventDefault();
+        var btn = document.getElementById("lk-submit");
+        orderId = document.getElementById("lk-order").value.trim();
+        state.contact = document.getElementById("lk-contact").value.trim();
+        if (!orderId || !state.contact) {
+          renderLookupForm("Please enter both your order ID and the email or mobile you used.");
+          return;
+        }
+        btn.disabled = true; btn.textContent = "Checking…";
+        checkEligibility();
+      });
+    }
+
+    /* ── step 2: may they review? ─────────────────────────────────────────── */
+
+    function checkEligibility() {
+      renderState('<span class="nf-quiz-spinner" style="margin:0 auto 14px;"></span>' +
+                  '<p>Checking your order…</p>');
+
+      API.reviewEligibility(orderId, state.contact).then(function (res) {
+        if (res.offline) {
+          renderState('<p>' + esc(res.message) + '</p>' +
+            '<button class="nf-review-submit" style="margin-top:16px;" onclick="window.location.reload()">Try again</button>',
+            "is-error");
+          return;
+        }
+        if (!res.ok) {
+          if (res.status === 404) { renderLookupForm(res.message); return; }
+          renderState('<p>' + esc(res.message || "We couldn't load that order.") + '</p>', "is-error");
+          return;
+        }
+
+        state.products = res.data.products || [];
+        state.reward   = res.data.reward;
+
+        if (!res.data.eligible) {
+          renderState(
+            '<p>' + esc(res.data.message || "There's nothing left to review on this order.") + '</p>' +
+            '<p style="margin-top:14px;"><a href="/pages/collections/shop.html" style="text-decoration:underline;">Browse new launches</a></p>',
+            "is-done");
+          return;
+        }
+
+        if (!res.data.delivered) {
+          // Not blocking — an early review is still a real one — but be honest
+          // that we don't have a delivery confirmation yet.
+          document.getElementById("review-intro").textContent =
+            "We haven't recorded a delivery for this order yet, but you're welcome to review it now.";
+        }
+
+        renderForm();
+      });
+    }
+
+    /* ── step 3: the form ─────────────────────────────────────────────────── */
+
+    function renderForm() {
+      var pending = state.products.filter(function (p) { return !p.reviewed; });
+
+      root.innerHTML =
+        '<form class="nf-review-card" id="review-form" novalidate>' +
+          '<p class="nf-auth-status" id="review-status" role="status" aria-live="polite" style="display:none;"></p>' +
+
+          '<div class="nf-review-field">' +
+            '<label class="nf-review-label" for="rv-product">Which fragrance?</label>' +
+            '<select id="rv-product" class="nf-review-select" required>' +
+              pending.map(function (p) {
+                return '<option value="' + esc(p.productId) + '">' + esc(p.name) + '</option>';
+              }).join("") +
+            '</select>' +
+          '</div>' +
+
+          '<div class="nf-review-field">' +
+            '<span class="nf-review-label" id="rating-label">Your rating</span>' +
+            '<div class="nf-stars" role="radiogroup" aria-labelledby="rating-label">' +
+              [5, 4, 3, 2, 1].map(function (n) {
+                return '<input type="radio" name="rating" id="star-' + n + '" value="' + n + '"/>' +
+                       '<label for="star-' + n + '" title="' + n + ' star' + (n > 1 ? "s" : "") + '" ' +
+                         'aria-label="' + n + ' star' + (n > 1 ? "s" : "") + '">★</label>';
+              }).join("") +
+            '</div>' +
+            '<p class="nf-auth-error" id="err-rating"></p>' +
+          '</div>' +
+
+          '<div class="nf-review-field">' +
+            '<label class="nf-review-label" for="rv-title">Headline <span style="text-transform:none;letter-spacing:0;">(optional)</span></label>' +
+            '<input id="rv-title" class="nf-review-input" type="text" maxlength="120" ' +
+              'placeholder="Sums up your experience"/>' +
+          '</div>' +
+
+          '<div class="nf-review-field">' +
+            '<label class="nf-review-label" for="rv-body">Your review <span style="text-transform:none;letter-spacing:0;">(optional)</span></label>' +
+            '<textarea id="rv-body" class="nf-review-textarea" maxlength="3000" ' +
+              'placeholder="How does it wear through the day? How long does it last?"></textarea>' +
+            '<p class="nf-auth-error" id="err-body"></p>' +
+          '</div>' +
+
+          '<div class="nf-review-field">' +
+            '<label class="nf-review-label" for="rv-photo">Add a photo <span style="text-transform:none;letter-spacing:0;">(optional)</span></label>' +
+            '<input id="rv-photo" class="nf-review-file" type="file" accept="image/jpeg,image/png,image/webp"/>' +
+            '<p class="nf-review-hint">JPG, PNG or WebP. Large photos are resized automatically before upload.</p>' +
+            '<p class="nf-auth-error" id="err-photo"></p>' +
+            '<img id="rv-preview" class="nf-review-preview" alt="Your photo" style="display:none;"/>' +
+          '</div>' +
+
+          '<button type="submit" class="nf-review-submit" id="rv-submit">Submit review</button>' +
+          (state.reward
+            ? '<p class="nf-review-hint" style="text-align:center;margin-top:12px;">' +
+                'We\'ll show your ' + esc(state.reward.label.toLowerCase()) + ' code once you submit.</p>'
+            : '') +
+        '</form>';
+
+      document.getElementById("rv-photo").addEventListener("change", handlePhoto);
+      document.getElementById("review-form").addEventListener("submit", submitReview);
+    }
+
+    /* ── photo handling ───────────────────────────────────────────────────
+       Resized in the browser so a 6 MB phone photo becomes a small upload. The
+       server still re-validates the result — this is convenience, not trust. */
+
+    function handlePhoto(e) {
+      var file = e.target.files && e.target.files[0];
+      var err  = document.getElementById("err-photo");
+      var preview = document.getElementById("rv-preview");
+      err.textContent = "";
+      state.photo = null;
+      preview.style.display = "none";
+
+      if (!file) return;
+
+      if (["image/jpeg", "image/png", "image/webp"].indexOf(file.type) === -1) {
+        err.textContent = "Please choose a JPG, PNG or WebP image.";
+        e.target.value = "";
+        return;
+      }
+      if (file.size > 12 * 1024 * 1024) {
+        err.textContent = "That image is very large. Please choose one under 12 MB.";
+        e.target.value = "";
+        return;
+      }
+
+      var reader = new FileReader();
+      reader.onerror = function () { err.textContent = "We couldn't read that image."; };
+      reader.onload = function () {
+        var img = new Image();
+        img.onerror = function () { err.textContent = "That file is not a valid image."; };
+        img.onload = function () {
+          var max = 1000;
+          var scale = Math.min(1, max / Math.max(img.width, img.height));
+          var canvas = document.createElement("canvas");
+          canvas.width  = Math.round(img.width * scale);
+          canvas.height = Math.round(img.height * scale);
+          canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+
+          // Step the quality down until it fits comfortably inside the server's cap.
+          var quality = 0.82, dataUrl;
+          do {
+            dataUrl = canvas.toDataURL("image/jpeg", quality);
+            quality -= 0.12;
+          } while (dataUrl.length > 300 * 1024 && quality > 0.25);
+
+          if (dataUrl.length > 340 * 1024) {
+            err.textContent = "We couldn't compress that image enough. Please try a smaller one.";
+            return;
+          }
+          state.photo = dataUrl;
+          preview.src = dataUrl;
+          preview.style.display = "block";
+        };
+        img.src = reader.result;
+      };
+      reader.readAsDataURL(file);
+    }
+
+    /* ── submit ───────────────────────────────────────────────────────────── */
+
+    function submitReview(e) {
+      e.preventDefault();
+
+      var btn    = document.getElementById("rv-submit");
+      var status = document.getElementById("review-status");
+      var rating = document.querySelector('input[name="rating"]:checked');
+      var body   = document.getElementById("rv-body").value.trim();
+
+      document.getElementById("err-rating").textContent = "";
+      document.getElementById("err-body").textContent = "";
+      status.style.display = "none";
+
+      if (!rating) {
+        document.getElementById("err-rating").textContent = "Please choose a rating.";
+        return;
+      }
+      if (body.length > 0 && body.length < 10) {
+        document.getElementById("err-body").textContent =
+          "Please write at least a few words, or leave this empty.";
+        return;
+      }
+
+      btn.disabled = true;
+      btn.textContent = "Submitting…";
+
+      API.submitReview({
+        orderId:   orderId,
+        contact:   state.contact,
+        productId: document.getElementById("rv-product").value,
+        rating:    parseInt(rating.value, 10),
+        title:     document.getElementById("rv-title").value.trim(),
+        body:      body,
+        photo:     state.photo
+      }).then(function (res) {
+        btn.disabled = false;
+        btn.textContent = "Submit review";
+
+        if (!res.ok) {
+          if (res.data && res.data.error === "already_reviewed") {
+            renderState('<p>' + esc(res.message) + '</p>', "is-done");
+            return;
+          }
+          status.style.display = "block";
+          status.className = "nf-auth-status is-error";
+          status.textContent = res.message || "We couldn't save your review. Please try again.";
+          return;
+        }
+
+        var reward = res.data.reward;
+        renderState(
+          '<h2 style="font-family:var(--font-heading);font-size:20px;color:#111;margin-bottom:10px;">Thank you</h2>' +
+          '<p>' + esc(res.data.message) + '</p>' +
+          (reward
+            ? '<p style="margin-top:16px;">Here\'s ' + esc(reward.label.toLowerCase()) + ':</p>' +
+              '<span class="nf-review-reward">' + esc(reward.code) + '</span>' +
+              '<p class="nf-review-hint" style="margin-top:10px;">' + esc(reward.terms) + '</p>'
+            : '') +
+          '<p style="margin-top:20px;"><a href="/pages/collections/shop.html" style="text-decoration:underline;">Shop new launches</a></p>',
+          "is-done");
+      });
+    }
+
+    /* ── boot ─────────────────────────────────────────────────────────────── */
+
+    if (!API) {
+      renderState('<p>The review form could not load. Please refresh the page.</p>', "is-error");
+    } else if (!orderId) {
+      renderLookupForm();
+    } else {
+      state.contact = API.recallCheckoutContact(orderId) || "";
+      checkEligibility();
+    }
+  })();
+  </script>
+
+</body>
+</html>

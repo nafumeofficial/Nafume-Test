@@ -2,11 +2,115 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8"/>
-    <link rel="icon" type="image/png" href="/assets/logo/logo-mark.png"/>
-    <link rel="apple-touch-icon" href="/assets/logo/logo-mark.png"/>
-  <meta http-equiv="refresh" content="0; url=/">
-  <script>window.location.replace('/');</script>
-  <title>Redirecting…</title>
+  <link rel="icon" type="image/png" href="/assets/logo/logo-mark.png"/>
+  <link rel="apple-touch-icon" href="/assets/logo/logo-mark.png"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Fragrance Finder — Find Your NAFUME Scent</title>
+  <meta name="description" content="Answer five quick questions and we'll match you with the NAFUME fragrance that suits your mood, occasion and taste."/>
+  <link rel="canonical" href="https://www.nafume.com/fragrance-finder"/>
+  <meta property="og:title" content="Fragrance Finder — Find Your NAFUME Scent"/>
+  <meta property="og:description" content="Five questions. One perfect match. Discover your NAFUME fragrance."/>
+  <meta property="og:type" content="website"/>
+  <link rel="stylesheet" href="css/launch.css"/>
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
 </head>
-<body></body>
+<body>
+
+  <div id="launch-overlay" class="lp-overlay" onclick="closeCart()"></div>
+  <div id="launch-toast" class="lp-toast" role="alert" aria-live="polite"></div>
+
+  <div id="launch-cart-drawer" class="lp-cart-drawer" role="dialog" aria-modal="true" aria-label="Shopping Cart">
+    <div class="cart-drawer-head">
+      <div>
+        <p class="cart-drawer-title">Your Cart</p>
+        <p class="cart-drawer-count" id="cart-drawer-count">0 items</p>
+      </div>
+      <button class="cart-close-btn" onclick="closeCart()" aria-label="Close cart">
+        <span class="material-symbols-outlined">close</span>
+      </button>
+    </div>
+    <div class="cart-drawer-items no-scrollbar" id="launch-cart-items"></div>
+    <div class="cart-drawer-footer" id="launch-cart-footer"></div>
+  </div>
+
+  <!-- Mobile nav drawer -->
+  <div class="nf-mobile-drawer" id="nf-mobile-drawer">
+    <div class="nf-drawer-head">
+      <a href="/" class="nf-logo" style="font-size:16px;letter-spacing:0.22em;">NAFUME</a>
+      <button class="nf-icon-btn" onclick="nfMenuClose()" aria-label="Close menu">
+        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <nav class="nf-drawer-nav">
+      <a href="/" class="nf-drawer-link">Home</a>
+      <a href="/pages/collections/shop.html" class="nf-drawer-link">New Launches</a>
+      <a href="/pages/products/seduction.html" class="nf-drawer-link">Seduction</a>
+      <a href="/pages/products/dark-oud.html" class="nf-drawer-link">Dark Oud</a>
+      <a href="/pages/products/red-spirit.html" class="nf-drawer-link">Red Spirit</a>
+      <a href="/pages/products/aqua-manthan.html" class="nf-drawer-link">Aqua Manthan</a>
+      <a href="/pages/products/all-day-misfit.html" class="nf-drawer-link">All Day</a>
+      <a href="https://www.instagram.com/nafume.official?igsh=djk0OHY0dnlmeXJ5" target="_blank" rel="noopener noreferrer" class="nf-drawer-link">Instagram ↗</a>
+    </nav>
+  </div>
+  <div class="nf-drawer-overlay" id="nf-drawer-overlay" onclick="nfMenuClose()"></div>
+
+  <div class="nf-ann">
+    <div class="nf-ann-track">SUMMER SALE &nbsp;•&nbsp; &#8377;799 EACH &nbsp;•&nbsp; FREE SHIPPING ABOVE &#8377;999 &nbsp;•&nbsp; SECURE ONLINE PAYMENT &amp; COD &nbsp;•&nbsp; FOLLOW NAFUME ON INSTAGRAM &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;SUMMER SALE &nbsp;•&nbsp; &#8377;799 EACH &nbsp;•&nbsp; FREE SHIPPING ABOVE &#8377;999 &nbsp;•&nbsp; SECURE ONLINE PAYMENT &amp; COD &nbsp;•&nbsp; FOLLOW NAFUME ON INSTAGRAM &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</div>
+  </div>
+
+  <header class="nf-header" id="main-header">
+    <div class="nf-logo-row">
+      <div class="nf-header-left">
+        <button class="nf-icon-btn nf-hamburger-btn" onclick="nfMenuOpen()" aria-label="Open menu">
+          <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+        </button>
+        <a href="/" class="nf-icon-btn nf-search-btn" aria-label="Browse website">
+          <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        </a>
+      </div>
+      <a href="/" class="nf-logo">NAFUME</a>
+      <div class="nf-header-right">
+        <button class="nf-icon-btn" onclick="openCart()" aria-label="View cart">
+          <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 01-8 0"/></svg>
+          <span class="nf-cart-badge lp-cart-badge">0</span>
+        </button>
+      </div>
+    </div>
+    <nav class="nf-nav-row" aria-label="Main navigation">
+      <a href="/" class="nf-nav-link">HOME</a>
+      <a href="/pages/collections/shop.html" class="nf-nav-link">NEW LAUNCHES</a>
+      <a href="/pages/products/seduction.html" class="nf-nav-link">SEDUCTION</a>
+      <a href="/pages/products/dark-oud.html" class="nf-nav-link">DARK OUD</a>
+      <a href="/pages/products/red-spirit.html" class="nf-nav-link">RED SPIRIT</a>
+      <a href="/pages/products/aqua-manthan.html" class="nf-nav-link">AQUA MANTHAN</a>
+      <a href="/pages/products/all-day-misfit.html" class="nf-nav-link">ALL DAY</a>
+      <a href="https://www.instagram.com/nafume.official?igsh=djk0OHY0dnlmeXJ5" target="_blank" rel="noopener noreferrer" class="nf-nav-link">INSTAGRAM</a>
+    </nav>
+  </header>
+
+  <main style="padding:44px 20px 72px;">
+    <div style="max-width:620px;margin:0 auto 30px;text-align:center;">
+      <p class="nf-quiz-teaser-eyebrow">Fragrance Finder</p>
+      <h1 class="nf-quiz-teaser-title">Find your NAFUME scent</h1>
+      <p class="nf-quiz-teaser-sub" style="margin-bottom:0;">
+        Five quick questions — no account needed. We'll match you with the fragrance
+        that fits your mood, your occasion and how much presence you like.
+      </p>
+    </div>
+
+    <!-- js/commerce/fragrance-quiz.js mounts itself here. -->
+    <div data-fragrance-quiz></div>
+  </main>
+
+  <div id="global-footer"></div>
+
+  <script src="js/commerce/config.js"></script>
+  <script src="js/commerce/api-client.js"></script>
+  <script src="js/commerce/commerce-service.js"></script>
+  <script src="js/commerce/offer-service.js"></script>
+  <script src="js/launch.js"></script>
+  <script src="js/commerce/fragrance-quiz.js"></script>
+  <script src="js/commerce/operations-service.js"></script>
+    <script src="js/commerce/lead-popup.js" defer></script>
+</body>
 </html>

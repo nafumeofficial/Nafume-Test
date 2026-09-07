@@ -2,195 +2,428 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8"/>
-    <link rel="icon" type="image/png" href="/assets/logo/logo-mark.png"/>
-    <link rel="apple-touch-icon" href="/assets/logo/logo-mark.png"/>
+  <link rel="icon" type="image/png" href="/assets/logo/logo-mark.png"/>
+  <link rel="apple-touch-icon" href="/assets/logo/logo-mark.png"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Orders Tracking Admin (Local Demo) — NAFUME</title>
+  <meta name="robots" content="noindex, nofollow"/>
+  <title>Orders &amp; Fulfilment — NAFUME Admin</title>
   <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: Arial, Helvetica, sans-serif; background: #f5f3ef; color: #1a1a1a; padding: 24px; }
-    .wrap { max-width: 1000px; margin: 0 auto; }
-    h1 { font-size: 20px; letter-spacing: 0.04em; }
-    .warn { background: #fdecea; border: 1px solid #f5c2bd; color: #8a1c10; padding: 12px 16px; border-radius: 6px; margin: 14px 0 16px; font-size: 13px; line-height: 1.5; }
-    .note { background: #eef5ff; border: 1px solid #cfe0f5; color: #1c4e8a; padding: 10px 14px; border-radius: 6px; margin: 0 0 20px; font-size: 12px; line-height: 1.5; }
-    .bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 16px; }
-    .bar input { border: 1px solid #ccc; padding: 9px 12px; border-radius: 6px; font-size: 13px; min-width: 220px; }
-    .count { margin-left: auto; font-size: 12px; color: #666; }
+    body { font-family: Arial, Helvetica, sans-serif; background: #f5f3ef; color: #1a1a1a; padding: 20px 16px 60px; -webkit-text-size-adjust: 100%; }
+    .wrap { max-width: 1040px; margin: 0 auto; }
+    h1 { font-size: 20px; letter-spacing: 0.04em; margin-top: 8px; }
+    a.back { font-size: 12px; color: #666; text-decoration: none; }
+
+    .note { border-radius: 6px; padding: 12px 16px; margin: 14px 0 18px; font-size: 13px; line-height: 1.55; }
+    .note.info { background: #eef5ff; border: 1px solid #cfe0f5; color: #1c4e8a; }
+    .note.warn { background: #fff8e6; border: 1px solid #f0dfae; color: #7a5b1e; }
+    .note.err  { background: #fdecea; border: 1px solid #f5c2bd; color: #8a1c10; }
+    .note.ok   { background: #e7f6ea; border: 1px solid #bfe3c6; color: #2e6b34; }
+    .note code { background: rgba(0,0,0,0.06); padding: 1px 5px; border-radius: 3px; }
+
+    .panel { background: #fff; border: 1px solid #e7e7e7; border-radius: 8px; padding: 18px; margin-bottom: 18px; }
+    .panel h2 { font-size: 14px; margin-bottom: 10px; }
+
+    label.lbl { display: block; font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: #888; margin-bottom: 5px; }
+    input, select { width: 100%; border: 1px solid #ccc; padding: 11px 12px; border-radius: 6px; font-size: 14px; background: #fff; min-height: 44px; }
+    input:focus, select:focus { outline: none; border-color: #111; }
+
+    button { border: none; border-radius: 6px; padding: 11px 18px; cursor: pointer; font-size: 13px; font-weight: 700; min-height: 44px; }
+    .b-primary { background: #111; color: #fff; }
+    .b-primary:disabled { background: #999; cursor: progress; }
+    .b-ship { background: #1c4e8a; color: #fff; }
+    .b-deliver { background: #2e7d32; color: #fff; }
+    .b-ghost { background: #fff; color: #333; border: 1px solid #ccc; }
+
+    .bar { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 16px; }
+    .bar > div { flex: 1 1 190px; min-width: 0; }
+    .count { font-size: 12px; color: #666; margin-left: auto; align-self: center; }
+
     .ord { background: #fff; border: 1px solid #e7e7e7; border-radius: 8px; padding: 16px; margin-bottom: 14px; }
     .ord-top { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; align-items: flex-start; }
-    .ord-id { font-weight: 700; font-size: 15px; }
-    .ord-meta { font-size: 12px; color: #777; margin-top: 2px; }
+    .ord-id { font-weight: 700; font-size: 15px; word-break: break-all; }
+    .ord-meta { font-size: 12px; color: #777; margin-top: 3px; line-height: 1.5; }
+    .pills { display: flex; gap: 6px; flex-wrap: wrap; }
     .pill { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; padding: 4px 9px; border-radius: 10px; font-weight: 700; white-space: nowrap; }
-    .pill.placed { background: #eee; color: #555; }
-    .pill.progress { background: #fff4e0; color: #b06f00; }
-    .pill.delivered { background: #e7f6ea; color: #2e7d32; }
-    .pill.bad { background: #fdecea; color: #b3261e; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-top: 14px; }
-    .fld label { display: block; font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: #888; margin-bottom: 4px; }
-    .fld input, .fld select { width: 100%; border: 1px solid #ccc; padding: 9px 10px; border-radius: 6px; font-size: 13px; background: #fff; }
+    .pill.grey { background: #eee; color: #555; }
+    .pill.amber { background: #fff4e0; color: #b06f00; }
+    .pill.green { background: #e7f6ea; color: #2e7d32; }
+    .pill.red { background: #fdecea; color: #b3261e; }
+
+    .items { font-size: 12px; color: #555; margin-top: 10px; line-height: 1.6; }
+    .cust { font-size: 12px; color: #555; margin-top: 8px; line-height: 1.6; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-top: 14px; }
     .acts { margin-top: 14px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-    .acts button { border: none; border-radius: 6px; padding: 9px 16px; cursor: pointer; font-size: 12px; font-weight: 700; }
-    .b-save { background: #2e7d32; color: #fff; }
-    .saved { font-size: 12px; color: #2e7d32; font-weight: 700; display: none; }
-    .empty { text-align: center; color: #999; padding: 40px; font-size: 14px; background: #fff; border: 1px solid #e7e7e7; border-radius: 8px; }
-    a.back { font-size: 12px; color: #666; text-decoration: none; }
-    .summary { font-size: 12px; color: #555; margin-top: 6px; }
+    .rowmsg { font-size: 12px; font-weight: 700; }
+
+    .empty { text-align: center; color: #999; padding: 40px 20px; font-size: 14px; background: #fff; border: 1px solid #e7e7e7; border-radius: 8px; }
+    @media (max-width: 560px) { body { padding: 16px 12px 50px; } .acts button { flex: 1 1 100%; } }
   </style>
 </head>
 <body>
   <div class="wrap">
-    <a class="back" href="../index.html">← Back to site</a>
-    <h1 style="margin-top:8px;">NAFUME — Orders &amp; Tracking Admin</h1>
+    <a class="back" href="/">← Back to site</a>
+    <h1>NAFUME — Orders &amp; Fulfilment</h1>
 
-    <div class="warn">
-      ⚠️ <strong>Local demo admin only. Do not use as a production admin panel.</strong>
-      This page reads and edits orders stored in <em>this browser's</em> localStorage only.
-      It is NOT secure, has NO login, and does NOT connect to Shiprocket. Replace it with a
-      real, authenticated server dashboard before going live.
-    </div>
-    <div class="note">
-      🔒 No Shiprocket credentials are used or stored here. To attach a courier, paste the
-      AWB / courier / tracking URL you received from Shiprocket (or your courier) and save.
-      The customer's Track Order page will then reflect it. For live auto-tracking, a backend
-      is required — see <strong>docs/shiprocket-tracking-setup.md</strong>.
+    <div class="note info">
+      This page talks to the live order database through <code>/api/admin/orders</code>.
+      Recording a <strong>delivery date</strong> here is what makes a post-delivery review
+      request become due — the daily job at <code>/api/jobs/review-requests</code> picks up
+      orders delivered more than the configured number of days ago.
     </div>
 
-    <div class="bar">
-      <input id="search" type="text" placeholder="Filter by order ID, name or phone…"/>
-      <span class="count" id="count"></span>
+    <div class="note warn">
+      <strong>Access is by API token.</strong> The token is held in this tab's
+      <code>sessionStorage</code> and is cleared when you close the tab. It is never written to
+      localStorage, never put in the URL, and never sent anywhere except this site's own
+      <code>/api/admin/*</code> endpoints. Do not open this page on a shared device, and set
+      <code>ADMIN_API_TOKEN</code> to a long random value.
     </div>
 
-    <div id="list"></div>
+    <!-- ── Sign in ─────────────────────────────────────────────────────── -->
+    <div class="panel" id="auth-panel">
+      <h2>Admin access</h2>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
+        <div style="flex:1 1 260px;min-width:0;">
+          <label class="lbl" for="token">ADMIN_API_TOKEN</label>
+          <input id="token" type="password" autocomplete="off" placeholder="Paste your admin token"/>
+        </div>
+        <button class="b-primary" id="auth-btn" type="button">Connect</button>
+      </div>
+      <p class="note err" id="auth-msg" style="display:none;margin-bottom:0;"></p>
+    </div>
+
+    <!-- ── Orders ──────────────────────────────────────────────────────── -->
+    <div id="orders-panel" style="display:none;">
+      <div class="bar">
+        <div>
+          <label class="lbl" for="f-payment">Payment status</label>
+          <select id="f-payment">
+            <option value="">All</option>
+            <option value="paid" selected>Paid</option>
+            <option value="pending">Pending</option>
+            <option value="failed">Failed</option>
+          </select>
+        </div>
+        <div>
+          <label class="lbl" for="f-fulfil">Fulfilment</label>
+          <select id="f-fulfil">
+            <option value="">All</option>
+            <option value="unfulfilled">Unfulfilled</option>
+            <option value="shipped">Shipped</option>
+            <option value="delivered">Delivered</option>
+          </select>
+        </div>
+        <div>
+          <label class="lbl" for="f-search">Search (order ID, name, email, phone)</label>
+          <input id="f-search" type="search" placeholder="NF-… / name / email"/>
+        </div>
+        <div style="flex:0 0 auto;">
+          <button class="b-ghost" id="refresh-btn" type="button">Refresh</button>
+        </div>
+        <span class="count" id="count"></span>
+      </div>
+
+      <p class="note err" id="list-msg" style="display:none;"></p>
+      <div id="orders"></div>
+    </div>
   </div>
 
-  <!-- Commerce + tracking services (Upgrade 1 + 7). No launch.js needed:
-       this page only reads/writes orders, not products or the cart. -->
-  <script src="../js/commerce/config.js"></script>
-  <script src="../js/commerce/commerce-service.js"></script>
-  <script src="../js/commerce/tracking-service.js"></script>
-  <script>
-    var TS = window.TrackingService;
-    var filterText = "";
+<script>
+/* ──────────────────────────────────────────────────────────────────────────
+   Orders admin.
 
-    var STATUS_OPTIONS = [
-      "order_placed", "confirmed", "packed", "shipped",
-      "in_transit", "out_for_delivery", "delivered", "cancelled", "rto"
-    ];
+   Replaces the previous localStorage-only demo panel, which could only ever
+   see orders placed in that one browser. Orders now live in the database, so
+   this reads and writes the real records through /api/admin/orders using a
+   bearer token.
 
-    function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) {
-      return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]; }); }
-    function attr(s) { return esc(s).replace(/'/g, "&#39;"); }
-    function curr(n) { return "₹" + Number(n || 0).toLocaleString("en-IN"); }
-    function fmt(iso) { try { return new Date(iso).toLocaleString("en-IN"); } catch (e) { return "—"; } }
+   Deliberately kept to what operations actually needs: see paid orders, record
+   an AWB, mark shipped, and record a DELIVERY DATE (the trigger for review
+   requests). Nothing here can edit money.
+   ────────────────────────────────────────────────────────────────────────── */
+(function () {
+  "use strict";
 
-    function pillClass(status) {
-      if (status === "delivered") return "delivered";
-      if (status === "cancelled" || status === "rto") return "bad";
-      if (status === "order_placed") return "placed";
-      return "progress";
+  var TOKEN_KEY = "nf_admin_token";
+  var orders = [];
+
+  function el(id) { return document.getElementById(id); }
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c];
+    });
+  }
+  function money(n) { return "₹" + Number(n || 0).toLocaleString("en-IN"); }
+  function fmtDate(iso) {
+    if (!iso) return "—";
+    try { return new Date(iso).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" }); }
+    catch (e) { return "—"; }
+  }
+  function todayLocalISO() {
+    var d = new Date(), off = d.getTimezoneOffset();
+    return new Date(d.getTime() - off * 60000).toISOString().slice(0, 10);
+  }
+
+  function token() { try { return sessionStorage.getItem(TOKEN_KEY) || ""; } catch (e) { return ""; } }
+  function setToken(v) {
+    try { v ? sessionStorage.setItem(TOKEN_KEY, v) : sessionStorage.removeItem(TOKEN_KEY); }
+    catch (e) {}
+  }
+
+  function showMsg(id, text, kind) {
+    var box = el(id);
+    box.style.display = "block";
+    box.className = "note " + (kind || "err");
+    box.textContent = text;
+  }
+  function hideMsg(id) { el(id).style.display = "none"; }
+
+  /* api(path, options) — always resolves; never throws at the call site. */
+  function api(path, options) {
+    options = options || {};
+    var init = {
+      method: options.method || "GET",
+      headers: { "Authorization": "Bearer " + token() }
+    };
+    if (options.body) {
+      init.headers["Content-Type"] = "application/json";
+      init.body = JSON.stringify(options.body);
     }
-
-    function getOrders() {
-      if (window.Commerce && window.Commerce.getAllOrders) {
-        try { return window.Commerce.getAllOrders() || []; } catch (e) { return []; }
-      }
-      try { return JSON.parse(localStorage.getItem("nafume_orders_v2") || "[]"); }
-      catch (e) { return []; }
-    }
-
-    function render() {
-      var listEl = document.getElementById("list");
-      var all = getOrders();
-      var q = filterText.trim().toLowerCase();
-      var rows = !q ? all : all.filter(function (o) {
-        var c = o.customer || {};
-        return String(o.orderId).toLowerCase().indexOf(q) !== -1 ||
-               String(c.name || "").toLowerCase().indexOf(q) !== -1 ||
-               String(c.phone || "").toLowerCase().indexOf(q) !== -1;
+    return fetch(path, init)
+      .then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (data) {
+          return { ok: r.ok && data.success !== false, status: r.status, data: data,
+                   message: data.message || null };
+        });
+      })
+      .catch(function () {
+        return { ok: false, status: 0, data: {},
+                 message: "Could not reach the server. Check your connection." };
       });
+  }
 
-      document.getElementById("count").textContent = rows.length + " of " + all.length + " order(s)";
+  /* ── auth ─────────────────────────────────────────────────────────────── */
 
-      if (!all.length) {
-        listEl.innerHTML = '<div class="empty">No local orders found in this browser. ' +
-          'Place a test order from the website first, then refresh this page.</div>';
+  function connect() {
+    var value = el("token").value.trim();
+    if (!value) { showMsg("auth-msg", "Please paste your admin token."); return; }
+
+    var btn = el("auth-btn");
+    btn.disabled = true; btn.textContent = "Connecting…";
+    hideMsg("auth-msg");
+    setToken(value);
+
+    api("/api/admin/orders?limit=1").then(function (res) {
+      btn.disabled = false; btn.textContent = "Connect";
+      if (!res.ok) {
+        setToken("");
+        if (res.status === 401) showMsg("auth-msg", "That token was not accepted.");
+        else if (res.status === 503) showMsg("auth-msg", res.message ||
+          "Admin API is not configured. Set ADMIN_API_TOKEN on the deployment.");
+        else showMsg("auth-msg", res.message || "Could not connect.");
         return;
       }
-      if (!rows.length) { listEl.innerHTML = '<div class="empty">No orders match your filter.</div>'; return; }
+      el("token").value = "";
+      el("auth-panel").style.display = "none";
+      el("orders-panel").style.display = "";
+      load();
+    });
+  }
 
-      listEl.innerHTML = rows.map(function (o) {
-        var t = TS ? TS.normalizeTracking(o) : (o.tracking || {});
-        var c = o.customer || {};
-        var totals = o.totals || {};
-        var statusOpts = STATUS_OPTIONS.map(function (s) {
-          return '<option value="' + s + '"' + (s === t.currentStatus ? ' selected' : '') + '>' +
-            (TS ? TS.getTrackingStatusLabel(s) : s) + '</option>';
-        }).join("");
+  /* ── list ─────────────────────────────────────────────────────────────── */
 
-        return '<div class="ord" data-oid="' + attr(o.orderId) + '">' +
-          '<div class="ord-top">' +
-            '<div>' +
-              '<div class="ord-id">' + esc(o.orderId) + '</div>' +
-              '<div class="ord-meta">' + esc(c.name || "—") + ' · ' + esc(c.phone || "—") + ' · ' + fmt(o.createdAt) + '</div>' +
-              '<div class="summary">' + (o.items || []).length + ' item(s) · ' + curr(totals.total) +
-                ' · Pay: ' + esc(o.paymentStatus || "—") + '</div>' +
-            '</div>' +
-            '<span class="pill ' + pillClass(t.currentStatus) + '">' +
-              (TS ? TS.getTrackingStatusLabel(t.currentStatus) : t.currentStatus) + '</span>' +
-          '</div>' +
+  function load() {
+    hideMsg("list-msg");
+    el("orders").innerHTML = '<div class="empty">Loading orders…</div>';
 
-          '<div class="grid">' +
-            fld("Courier Name", "courierName", t.courierName) +
-            fld("AWB Number", "awb", t.awb) +
-            fld("Tracking URL", "trackingUrl", t.trackingUrl) +
-            fld("Est. Delivery (date)", "estimatedDelivery", t.estimatedDelivery, "date") +
-            '<div class="fld"><label>Current Status</label><select data-f="currentStatus">' + statusOpts + '</select></div>' +
-            fld("Event Location (optional)", "eventLocation", "") +
-          '</div>' +
+    var params = ["limit=100"];
+    if (el("f-payment").value) params.push("status=" + encodeURIComponent(el("f-payment").value));
+    if (el("f-fulfil").value)  params.push("fulfillment=" + encodeURIComponent(el("f-fulfil").value));
 
-          '<div class="acts">' +
-            '<button class="b-save" onclick="saveOrder(this)">Save Tracking</button>' +
-            '<a class="back" href="../pages/order/track-order.html?order=' + encodeURIComponent(o.orderId) + '" target="_blank">Open customer track page ↗</a>' +
-            '<span class="saved">✓ Saved</span>' +
-          '</div>' +
-        '</div>';
-      }).join("");
-    }
-
-    function fld(label, key, val, type) {
-      return '<div class="fld"><label>' + esc(label) + '</label>' +
-        '<input type="' + (type || "text") + '" data-f="' + key + '" value="' + attr(val || "") + '"/></div>';
-    }
-
-    window.saveOrder = function (btn) {
-      var card = btn.closest(".ord");
-      if (!card || !TS) return;
-      var orderId = card.getAttribute("data-oid");
-      var payload = {};
-      card.querySelectorAll("[data-f]").forEach(function (el) {
-        payload[el.getAttribute("data-f")] = el.value.trim();
-      });
-      // estimatedDelivery: store as ISO if a date was picked.
-      if (payload.estimatedDelivery) {
-        try { payload.estimatedDelivery = new Date(payload.estimatedDelivery).toISOString(); } catch (e) {}
+    api("/api/admin/orders?" + params.join("&")).then(function (res) {
+      if (!res.ok) {
+        el("orders").innerHTML = "";
+        if (res.status === 401) {
+          setToken("");
+          el("orders-panel").style.display = "none";
+          el("auth-panel").style.display = "";
+          showMsg("auth-msg", "Your session ended. Please enter the token again.");
+          return;
+        }
+        showMsg("list-msg", res.message || "Could not load orders.");
+        return;
       }
-      var updated = TS.updateLocalTracking(orderId, payload);
-      var saved = card.querySelector(".saved");
-      if (updated && saved) {
-        saved.style.display = "inline";
-        setTimeout(function () { saved.style.display = "none"; render(); }, 900);
-      } else {
-        alert("Could not save. Order not found in this browser.");
-      }
-    };
-
-    document.getElementById("search").addEventListener("input", function (e) {
-      filterText = e.target.value || "";
+      orders = res.data.orders || [];
       render();
     });
+  }
 
-    document.addEventListener("DOMContentLoaded", render);
-  </script>
+  function render() {
+    var q = el("f-search").value.trim().toLowerCase();
+    var list = !q ? orders : orders.filter(function (o) {
+      var s = (o.orderId || "") + " " +
+              ((o.shipping && o.shipping.name) || "") + " " +
+              ((o.shipping && o.shipping.email) || "") + " " +
+              ((o.shipping && o.shipping.phone) || "");
+      return s.toLowerCase().indexOf(q) !== -1;
+    });
+
+    el("count").textContent = list.length + " of " + orders.length + " order(s)";
+
+    if (!list.length) {
+      el("orders").innerHTML = '<div class="empty">No orders match these filters.</div>';
+      return;
+    }
+
+    el("orders").innerHTML = list.map(function (o) {
+      var s = o.shipping || {}, d = o.delivery || {}, t = o.totals || {};
+      var payPill = o.paymentStatus === "paid" ? "green" : (o.paymentStatus === "failed" ? "red" : "amber");
+      var fulPill = o.fulfillmentStatus === "delivered" ? "green"
+                  : (o.fulfillmentStatus === "shipped" ? "amber" : "grey");
+
+      return '<div class="ord" data-order="' + esc(o.orderId) + '">' +
+        '<div class="ord-top">' +
+          '<div style="min-width:0;">' +
+            '<div class="ord-id">' + esc(o.orderId) + '</div>' +
+            '<div class="ord-meta">' + fmtDate(o.createdAt) + ' · ' +
+              esc(o.paymentMethod === "cod" ? "Cash on Delivery" : "Paid online") +
+              (o.razorpayPaymentId ? ' · ' + esc(o.razorpayPaymentId) : '') +
+            '</div>' +
+          '</div>' +
+          '<div style="text-align:right;">' +
+            '<div style="font-weight:700;font-size:15px;">' + money(t.total) + '</div>' +
+            '<div class="pills" style="margin-top:6px;justify-content:flex-end;">' +
+              '<span class="pill ' + payPill + '">Pay: ' + esc(o.paymentStatus) + '</span>' +
+              '<span class="pill ' + fulPill + '">' + esc(o.fulfillmentStatus) + '</span>' +
+              (o.whatsappOptIn ? '<span class="pill green">WA opt-in</span>' : '') +
+            '</div>' +
+          '</div>' +
+        '</div>' +
+
+        '<div class="cust">' +
+          '<strong>' + esc(s.name) + '</strong> · ' + esc(s.phone) + ' · ' + esc(s.email) + '<br/>' +
+          esc([s.line1, s.line2, s.city, s.state, s.pincode].filter(Boolean).join(", ")) +
+        '</div>' +
+
+        '<div class="items">' +
+          (o.items || []).map(function (i) {
+            return esc(i.name) + " × " + esc(i.quantity);
+          }).join("<br/>") +
+        '</div>' +
+
+        '<div class="ord-meta" style="margin-top:8px;">' +
+          'Shipped: ' + fmtDate(d.shippedAt) + ' · Delivered: ' + fmtDate(d.deliveredAt) +
+          ' · Review request: ' + esc(o.review ? o.review.requestStatus : "—") +
+          (o.review && o.review.submitted ? ' · <strong>reviewed</strong>' : '') +
+        '</div>' +
+
+        '<div class="grid">' +
+          '<div><label class="lbl">AWB / tracking no.</label>' +
+            '<input class="in-awb" type="text" value="' + esc(d.awb || "") + '" placeholder="AWB number"/></div>' +
+          '<div><label class="lbl">Courier</label>' +
+            '<input class="in-courier" type="text" value="' + esc(d.courierName || "") + '" placeholder="e.g. Delhivery"/></div>' +
+          '<div><label class="lbl">Delivery date</label>' +
+            '<input class="in-delivered" type="date" max="' + todayLocalISO() + '" value="' +
+              (d.deliveredAt ? esc(String(d.deliveredAt).slice(0, 10)) : "") + '"/></div>' +
+        '</div>' +
+
+        '<div class="acts">' +
+          '<button class="b-ship act-ship" type="button">Mark shipped</button>' +
+          '<button class="b-deliver act-deliver" type="button">Mark delivered</button>' +
+          '<button class="b-ghost act-track" type="button">Save tracking only</button>' +
+          '<span class="rowmsg"></span>' +
+        '</div>' +
+      '</div>';
+    }).join("");
+
+    wireRows();
+  }
+
+  /* ── row actions ──────────────────────────────────────────────────────── */
+
+  function wireRows() {
+    document.querySelectorAll(".ord").forEach(function (row) {
+      var orderId = row.getAttribute("data-order");
+      var msg = row.querySelector(".rowmsg");
+
+      function act(action, extra, button) {
+        var buttons = row.querySelectorAll("button");
+        buttons.forEach(function (b) { b.disabled = true; });
+        msg.style.color = "#777";
+        msg.textContent = "Saving…";
+
+        api("/api/admin/orders", {
+          method: "POST",
+          body: Object.assign({ orderId: orderId, action: action }, extra || {})
+        }).then(function (res) {
+          buttons.forEach(function (b) { b.disabled = false; });
+          if (!res.ok) {
+            msg.style.color = "#b3261e";
+            msg.textContent = res.message || "Could not save.";
+            return;
+          }
+          msg.style.color = "#2e7d32";
+          msg.textContent = "Saved ✓";
+
+          // Refresh just this order in place, so filters and scroll position hold.
+          var updated = res.data.order;
+          for (var i = 0; i < orders.length; i++) {
+            if (orders[i].orderId === updated.orderId) { orders[i] = updated; break; }
+          }
+          setTimeout(render, 700);
+        });
+      }
+
+      row.querySelector(".act-ship").addEventListener("click", function () {
+        act("mark_shipped", {
+          awb: row.querySelector(".in-awb").value.trim(),
+          courierName: row.querySelector(".in-courier").value.trim()
+        });
+      });
+
+      row.querySelector(".act-deliver").addEventListener("click", function () {
+        var date = row.querySelector(".in-delivered").value;
+        // A bare yyyy-mm-dd is midnight UTC; send midday so the date is not
+        // shifted backwards for IST when the server reads it.
+        var iso = date ? new Date(date + "T12:00:00").toISOString() : undefined;
+        if (date && new Date(date + "T12:00:00").getTime() > Date.now()) {
+          msg.style.color = "#b3261e";
+          msg.textContent = "Delivery date cannot be in the future.";
+          return;
+        }
+        act("mark_delivered", iso ? { deliveredAt: iso } : {});
+      });
+
+      row.querySelector(".act-track").addEventListener("click", function () {
+        var awb = row.querySelector(".in-awb").value.trim();
+        if (!awb) {
+          msg.style.color = "#b3261e";
+          msg.textContent = "Enter an AWB first.";
+          return;
+        }
+        act("set_tracking", { awb: awb, courierName: row.querySelector(".in-courier").value.trim() });
+      });
+    });
+  }
+
+  /* ── wire up ──────────────────────────────────────────────────────────── */
+
+  el("auth-btn").addEventListener("click", connect);
+  el("token").addEventListener("keydown", function (e) { if (e.key === "Enter") connect(); });
+  el("refresh-btn").addEventListener("click", load);
+  el("f-payment").addEventListener("change", load);
+  el("f-fulfil").addEventListener("change", load);
+  el("f-search").addEventListener("input", render);
+
+  // Resume within the same tab without re-pasting the token.
+  if (token()) {
+    el("auth-panel").style.display = "none";
+    el("orders-panel").style.display = "";
+    load();
+  }
+})();
+</script>
 </body>
 </html>

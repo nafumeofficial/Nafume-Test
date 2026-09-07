@@ -7,7 +7,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Checkout — NAFUME Artisan Luxe</title>
   <meta name="robots" content="noindex, nofollow"/>
-  <meta name="description" content="Complete your NAFUME order. Fill in your shipping details and confirm on WhatsApp."/>
+  <meta name="description" content="Complete your NAFUME order — secure online payment or cash on delivery."/>
   <link rel="stylesheet" href="../../css/launch.css"/>
   <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
 </head>
@@ -52,7 +52,7 @@
   <div class="nf-drawer-overlay" id="nf-drawer-overlay" onclick="nfMenuClose()"></div>
 
   <div class="nf-ann">
-    <div class="nf-ann-track">SUMMER SALE &nbsp;•&nbsp; &#8377;799 EACH &nbsp;•&nbsp; FREE SHIPPING ABOVE &#8377;999 &nbsp;•&nbsp; ORDERS CONFIRMED ON WHATSAPP &nbsp;•&nbsp; FOLLOW NAFUME ON INSTAGRAM &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;SUMMER SALE &nbsp;•&nbsp; &#8377;799 EACH &nbsp;•&nbsp; FREE SHIPPING ABOVE &#8377;999 &nbsp;•&nbsp; ORDERS CONFIRMED ON WHATSAPP &nbsp;•&nbsp; FOLLOW NAFUME ON INSTAGRAM &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</div>
+    <div class="nf-ann-track">SUMMER SALE &nbsp;•&nbsp; &#8377;799 EACH &nbsp;•&nbsp; FREE SHIPPING ABOVE &#8377;999 &nbsp;•&nbsp; SECURE ONLINE PAYMENT &amp; COD &nbsp;•&nbsp; FOLLOW NAFUME ON INSTAGRAM &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;SUMMER SALE &nbsp;•&nbsp; &#8377;799 EACH &nbsp;•&nbsp; FREE SHIPPING ABOVE &#8377;999 &nbsp;•&nbsp; SECURE ONLINE PAYMENT &amp; COD &nbsp;•&nbsp; FOLLOW NAFUME ON INSTAGRAM &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</div>
   </div>
 
   <header class="nf-header" id="main-header">
@@ -91,10 +91,10 @@
 
       <!-- Left: Form -->
       <div class="shipping-form-col">
-        <h1 class="shipping-heading">Shipping Details</h1>
-        <p class="shipping-subhead">We'll confirm your order on WhatsApp after you submit.</p>
+        <h1 class="shipping-heading">Checkout</h1>
+        <p class="shipping-subhead">Complete your order here — payment and confirmation happen on this page.</p>
 
-        <form id="shipping-form" class="shipping-form" onsubmit="submitShippingForm(event)" novalidate>
+        <form id="shipping-form" class="shipping-form" onsubmit="placeOrder(event)" novalidate>
 
           <div class="form-section">
             <h2 class="form-section-title">Contact</h2>
@@ -106,15 +106,29 @@
             </div>
             <div class="form-row form-row-2">
               <div class="form-field">
-                <label for="cust-phone">WhatsApp Number <span class="req">*</span></label>
-                <input type="tel" id="cust-phone" name="phone" placeholder="10-digit mobile number" required autocomplete="tel" maxlength="10" pattern="[6-9][0-9]{9}"/>
-                <p class="field-hint">Order confirmation will be sent here</p>
+                <label for="cust-phone">Mobile Number <span class="req">*</span></label>
+                <input type="tel" id="cust-phone" name="phone" placeholder="10-digit mobile number" required autocomplete="tel" inputmode="numeric" maxlength="10" pattern="[6-9][0-9]{9}"/>
+                <p class="field-hint">Used for delivery updates</p>
               </div>
               <div class="form-field">
-                <label for="cust-email">Email (optional)</label>
-                <input type="email" id="cust-email" name="email" placeholder="your@email.com" autocomplete="email"/>
+                <label for="cust-email">Email <span class="req">*</span></label>
+                <input type="email" id="cust-email" name="email" placeholder="your@email.com" required autocomplete="email" inputmode="email"/>
+                <p class="field-hint">Your order confirmation is sent here</p>
               </div>
             </div>
+
+            <!-- WhatsApp marketing consent.
+                 Deliberately NOT pre-ticked: India's DPDP Act requires consent to
+                 be a clear affirmative action, and a pre-ticked box is not one.
+                 Order/delivery updates are transactional and do not depend on
+                 this box — it governs marketing only. -->
+            <label class="consent-row" for="whatsapp-optin">
+              <input type="checkbox" id="whatsapp-optin" name="whatsappOptIn" value="yes"/>
+              <span class="consent-text">
+                <span class="consent-label">Get order updates + fragrance recommendations on WhatsApp</span>
+                <span class="consent-hint">Optional. We'll only message this number if you tick this box, and you can opt out any time.</span>
+              </span>
+            </label>
           </div>
 
           <div class="form-section">
@@ -187,23 +201,42 @@
           </div>
 
           <div class="form-section">
-            <h2 class="form-section-title">Payment Preference</h2>
+            <h2 class="form-section-title">Payment</h2>
             <div class="payment-options">
-              <label class="payment-option">
-                <input type="radio" name="payment" value="COD" checked/>
+              <!-- data-method="online" is hidden by initCheckoutUI() if Razorpay
+                   is switched off in js/commerce/config.js, so the page never
+                   offers a payment button that cannot work. -->
+              <label class="payment-option" data-method="online">
+                <input type="radio" name="payment" value="online" checked/>
                 <span class="payment-label">
-                  <span class="payment-name">Cash on Delivery</span>
-                  <span class="payment-desc">Pay when your order arrives</span>
+                  <span class="payment-name">Pay Online — UPI / Card / Netbanking</span>
+                  <span class="payment-desc">Secure payment via Razorpay. Includes an extra 5% prepaid discount.</span>
                 </span>
               </label>
-              <label class="payment-option">
-                <input type="radio" name="payment" value="Prepaid (UPI / Bank Transfer)"/>
+              <label class="payment-option" data-method="cod">
+                <input type="radio" name="payment" value="COD"/>
                 <span class="payment-label">
-                  <span class="payment-name">Prepaid — UPI / Bank Transfer</span>
-                  <span class="payment-desc">We'll share payment details on WhatsApp</span>
+                  <span class="payment-name">Cash on Delivery</span>
+                  <span class="payment-desc">Pay the courier when your order arrives</span>
                 </span>
               </label>
             </div>
+          </div>
+
+          <!-- Promo code.
+               Deliberately NOT a <form> of its own — a nested form is invalid
+               HTML, and pressing Enter here must not submit the checkout. The
+               Apply button is type="button" and the input's Enter key is
+               handled explicitly in js/launch.js. -->
+          <div class="form-section">
+            <h2 class="form-section-title">Promo code</h2>
+            <div class="promo-row">
+              <input type="text" id="promo-code" name="discountCode" class="promo-input"
+                     placeholder="Enter code" autocomplete="off" autocapitalize="characters"
+                     spellcheck="false" maxlength="32" aria-describedby="promo-msg"/>
+              <button type="button" class="promo-apply" id="promo-apply">Apply</button>
+            </div>
+            <p class="promo-msg" id="promo-msg" role="status" aria-live="polite"></p>
           </div>
 
           <div class="form-section">
@@ -212,31 +245,22 @@
           </div>
 
           <div class="form-actions">
-            <!-- Secure (Shopify) checkout — shown only when Shopify mode is on.
-                 Visibility + label are set by initCheckoutModeUI() in launch.js. -->
-            <button type="button" class="btn-secure-checkout" id="btn-secure-checkout" style="display:none;">
-              <span class="material-symbols-outlined" style="font-size:20px;">lock</span>
-              Proceed to Secure Checkout
-            </button>
-            <!-- Dev/fallback notice (e.g. "online checkout is being connected") -->
-            <p class="checkout-warning-note" id="checkout-warning-note" style="display:none;"></p>
+            <!-- Live status for every checkout state: validating, starting
+                 payment, waiting, confirming, success, failure. Populated by
+                 showCheckoutStatus() in js/launch.js. -->
+            <p class="checkout-status-note" id="checkout-status-note" role="status" aria-live="polite" style="display:none;"></p>
 
-            <!-- Razorpay "Pay Online" — visibility set by initRazorpayCheckoutUI() in
-                 launch.js. Not a submit button: it validates the form itself, opens
-                 Razorpay Checkout, then verifies payment server-side before redirecting. -->
-            <button type="button" class="btn-secure-checkout" id="btn-razorpay-checkout" style="display:none;">
-              <span class="material-symbols-outlined" style="font-size:20px;">lock</span>
-              Pay Online (Razorpay)
-            </button>
-            <p class="checkout-warning-note" id="razorpay-status-note" style="display:none;"></p>
-
+            <!-- The single CTA. Its label and icon track the selected payment
+                 method (updatePlaceOrderLabel() in js/launch.js). -->
             <button type="submit" class="btn-place-order" id="btn-place-order">
-              <span class="material-symbols-outlined" style="font-size:20px;">whatsapp</span>
-              Confirm Order on WhatsApp
+              <span class="material-symbols-outlined" style="font-size:20px;">lock</span>
+              Pay Securely
             </button>
-            <!-- Trust line under the primary CTA (text set by initCheckoutModeUI) -->
-            <p class="checkout-trust-note" id="checkout-trust-note">Secure checkout powered by NAFUME commerce system.</p>
-            <!-- Policy consent (Upgrade 5) -->
+
+            <p class="checkout-trust-note" id="checkout-trust-note">
+              Payments are processed securely by Razorpay. NAFUME never sees your card or UPI details.
+            </p>
+
             <p class="checkout-policy-consent">
               By placing this order, you agree to NAFUME's
               <a href="../legal/terms-conditions.html" target="_blank">Terms &amp; Conditions</a>,
@@ -244,22 +268,12 @@
               <a href="../legal/return-refund-policy.html" target="_blank">Return &amp; Refund Policy</a>.
             </p>
             <p class="order-notice">
-              Tapping the button will open WhatsApp with your complete order details pre-filled. We'll confirm and dispatch within 24 hours.
+              We dispatch within 24 hours and email your tracking details. Need help?
+              <a href="https://wa.me/918595862227" target="_blank" rel="noopener noreferrer">Chat with us on WhatsApp</a>.
             </p>
           </div>
 
         </form>
-
-        <div id="order-confirm-msg" class="order-confirm-msg" style="display:none;">
-          <span class="material-symbols-outlined order-confirm-icon">check_circle</span>
-          <h2 class="order-confirm-heading">Order Placed!</h2>
-          <p class="order-confirm-sub">Your WhatsApp has been opened with your order details. Just tap Send to confirm.</p>
-          <p class="order-confirm-orderid" id="confirm-order-id"></p>
-          <div class="order-confirm-actions">
-            <a href="#" id="confirm-view-link" class="order-confirm-cta">View Order Details</a>
-            <a href="/" class="order-confirm-cta-outline">Back to Home</a>
-          </div>
-        </div>
       </div>
 
       <!-- Right: Order Summary -->
@@ -294,7 +308,7 @@
           </div>
           <div class="trust-item">
             <span class="material-symbols-outlined">lock</span>
-            <span>Secure WhatsApp Checkout</span>
+            <span>Secure Payments by Razorpay</span>
           </div>
           <div class="trust-item">
             <span class="material-symbols-outlined">replay</span>
@@ -313,15 +327,21 @@
 
   <div id="global-footer"></div>
 
-  <!-- Razorpay Standard Checkout SDK (official, hosted by Razorpay — no npm package
-       required). Only exposes the publishable key_id returned by create-order.js;
-       the secret key is never present in this page or any frontend file. -->
-  <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+  <!-- Razorpay Standard Checkout is loaded ON DEMAND by ensureRazorpaySdk() in
+       js/launch.js, not with a blocking <script> tag here.
+       A classic script tag executes in order and holds up every script after
+       it, so a slow or unreachable Razorpay CDN used to leave this whole page
+       without validation or a working submit handler. Fetching it only when the
+       customer chooses to pay means a third-party outage can never break
+       checkout, and Cash on Delivery keeps working either way.
+       preconnect keeps the on-demand fetch fast. -->
+  <link rel="preconnect" href="https://checkout.razorpay.com" crossorigin/>
+  <link rel="dns-prefetch" href="https://checkout.razorpay.com"/>
 
-  <!-- Commerce foundation (Upgrade 1) + Shopify checkout (Upgrade 2) — load
-       before launch.js so window.Commerce / window.ShopifyService are ready. -->
+  <!-- Commerce foundation — load before launch.js so window.Commerce,
+       window.Offers and window.NafumeAPI are ready when checkout initialises. -->
   <script src="../../js/commerce/config.js"></script>
-  <script src="../../js/commerce/shopify-service.js"></script>
+  <script src="../../js/commerce/api-client.js"></script>
   <script src="../../js/commerce/commerce-service.js"></script>
   <script src="../../js/commerce/customer-service.js"></script>
   <script src="../../js/commerce/offer-service.js"></script>

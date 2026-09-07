@@ -1,4 +1,4 @@
-/* ================================================================
+﻿/* ================================================================
    NAFUME Artisan Luxe — launch.css
    Fonts : Acumin Pro Wide Medium  (headings / logo / titles)
            Stevie Sans             (body / buttons / prices)
@@ -1374,8 +1374,8 @@ body.has-bar { padding-bottom: 0; }
 
 .nf-nav-link {
   font-family: var(--font-body);
-  font-size: 9.5px; font-weight: 600;
-  letter-spacing: 0.14em;
+  font-size: 11px; font-weight: 600;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   color: #555; text-decoration: none;
   padding: 9px 12px;
@@ -3040,4 +3040,761 @@ body.has-bar { padding-bottom: 0; }
 }
 @media (max-width: 580px) {
   .reg-form-section { padding: 0 16px; margin-top: 36px; }
+}
+
+
+/* ================================================================
+   NAFUME — Customer data system components
+   ----------------------------------------------------------------
+   Checkout states, WhatsApp consent, email-capture popup, fragrance
+   finder, review form and account screens.
+
+   All of it inherits the existing NAFUME system: --font-heading for
+   titles, --font-body everywhere else, square-ish 2–4px radii, the
+   #111 primary button, the #C5A059 gold accent, and the same 12px
+   uppercase 0.12em-tracked label style used by .btn-place-order.
+
+   Mobile first: every block below is written for a small phone and
+   only widened at min-width breakpoints. Tap targets are >= 44px.
+   ================================================================ */
+
+:root {
+  --nf-gold:      #C5A059;
+  --nf-error:     #a4342d;
+  --nf-error-bg:  #fdecea;
+  --nf-error-brd: #f3c6c3;
+  --nf-ok:        #2e6b34;
+  --nf-ok-bg:     #f1f7f1;
+  --nf-ok-brd:    #cde3cf;
+  --nf-info:      #8a6d1f;
+  --nf-info-bg:   #fdf6e3;
+  --nf-info-brd:  #f0e2b8;
+}
+
+/* ── Checkout: status, busy + field errors ─────────────────────── */
+
+.checkout-status-note {
+  font-family: var(--font-body);
+  font-size: 13px; line-height: 1.5;
+  display: flex; align-items: center; gap: 8px;
+  padding: 12px 14px; border-radius: 4px;
+  margin: 0 0 16px; border: 1px solid transparent;
+}
+.checkout-status-note.is-info    { background: var(--nf-info-bg);  border-color: var(--nf-info-brd);  color: var(--nf-info); }
+.checkout-status-note.is-error   { background: var(--nf-error-bg); border-color: var(--nf-error-brd); color: var(--nf-error); }
+.checkout-status-note.is-success { background: var(--nf-ok-bg);    border-color: var(--nf-ok-brd);    color: var(--nf-ok); }
+
+/* The primary CTA is black now that payment happens on-site; WhatsApp
+   green no longer describes what the button does. */
+.btn-place-order {
+  background: #111;
+  min-height: 52px;
+  border-radius: 2px;
+}
+.btn-place-order:hover  { background: #000; }
+.btn-place-order:disabled,
+.btn-place-order.is-busy { background: #4a4a4a; cursor: progress; }
+
+.btn-spinner {
+  width: 14px; height: 14px; flex: 0 0 14px;
+  border: 2px solid rgba(255,255,255,0.35);
+  border-top-color: #fff; border-radius: 50%;
+  display: inline-block; margin-right: 8px;
+  animation: nf-spin 0.7s linear infinite;
+}
+@keyframes nf-spin { to { transform: rotate(360deg); } }
+
+.field-error {
+  font-family: var(--font-body);
+  font-size: 11.5px; color: var(--nf-error);
+  margin-top: 5px; line-height: 1.4;
+}
+.shipping-form input.has-error,
+.shipping-form select.has-error,
+.shipping-form textarea.has-error {
+  border-color: var(--nf-error) !important;
+  background: #fffafa;
+}
+
+.checkout-account-note {
+  font-family: var(--font-body);
+  font-size: 12px; line-height: 1.5;
+  margin: 0 0 16px; padding: 10px 14px; border-radius: 4px;
+  background: var(--light-bg); color: var(--muted);
+}
+.checkout-account-note.is-signed-in { background: var(--nf-ok-bg);   color: var(--nf-ok); }
+.checkout-account-note.is-guest     { background: var(--nf-info-bg); color: var(--nf-info); }
+.checkout-account-note a { color: #111; text-decoration: underline; }
+
+/* ── WhatsApp consent checkbox ─────────────────────────────────── */
+
+.consent-row {
+  display: flex; align-items: flex-start; gap: 12px;
+  padding: 14px; margin-top: 4px;
+  border: 1px solid var(--border); border-radius: 4px;
+  background: #fcfcfc; cursor: pointer;
+  /* Comfortably larger than the 44px minimum tap target. */
+  min-height: 56px;
+}
+.consent-row:hover { border-color: #c9c9c9; }
+.consent-row input[type="checkbox"] {
+  width: 20px; height: 20px; flex: 0 0 20px;
+  margin-top: 1px; accent-color: #111; cursor: pointer;
+}
+.consent-text { display: flex; flex-direction: column; gap: 3px; }
+.consent-label {
+  font-family: var(--font-body);
+  font-size: 13px; font-weight: 500; color: var(--text); line-height: 1.4;
+}
+.consent-hint {
+  font-family: var(--font-body);
+  font-size: 11px; color: var(--muted); line-height: 1.45;
+}
+
+/* ── Email capture popup ───────────────────────────────────────── */
+
+body.nf-lead-open { overflow: hidden; }
+
+.nf-lead-popup {
+  position: fixed; inset: 0; z-index: 9000;
+  display: flex; align-items: flex-end; justify-content: center;
+  opacity: 0; transition: opacity 0.25s ease;
+  pointer-events: none;
+}
+.nf-lead-popup.is-open { opacity: 1; pointer-events: auto; }
+
+.nf-lead-overlay {
+  position: absolute; inset: 0;
+  background: rgba(0,0,0,0.55);
+  -webkit-backdrop-filter: blur(2px); backdrop-filter: blur(2px);
+}
+
+.nf-lead-card {
+  position: relative;
+  width: 100%; max-width: 460px;
+  max-height: 92vh; overflow-y: auto;
+  background: var(--bg);
+  padding: 32px 22px 26px;
+  border-radius: 8px 8px 0 0;
+  transform: translateY(24px);
+  transition: transform 0.25s ease;
+  /* Keeps the card clear of the iOS home indicator. */
+  padding-bottom: calc(26px + env(safe-area-inset-bottom, 0px));
+}
+.nf-lead-popup.is-open .nf-lead-card { transform: translateY(0); }
+.nf-lead-card:focus { outline: none; }
+
+@media (min-width: 640px) {
+  .nf-lead-popup { align-items: center; }
+  .nf-lead-card {
+    border-radius: 4px;
+    padding: 40px 38px 32px;
+    transform: translateY(0) scale(0.97);
+  }
+  .nf-lead-popup.is-open .nf-lead-card { transform: translateY(0) scale(1); }
+}
+
+.nf-lead-close {
+  position: absolute; top: 10px; right: 10px;
+  width: 44px; height: 44px;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--muted); background: none; border: none;
+}
+.nf-lead-close:hover { color: var(--text); }
+
+.nf-lead-eyebrow {
+  font-family: var(--font-heading);
+  font-size: 10px; letter-spacing: 0.28em; text-transform: uppercase;
+  color: var(--nf-gold); margin-bottom: 10px;
+}
+.nf-lead-title {
+  font-family: var(--font-heading);
+  font-size: 22px; line-height: 1.25; color: var(--text); margin-bottom: 10px;
+}
+@media (min-width: 640px) { .nf-lead-title { font-size: 26px; } }
+
+.nf-lead-sub {
+  font-family: var(--font-body);
+  font-size: 13px; line-height: 1.6; color: var(--muted); margin-bottom: 22px;
+}
+
+.nf-lead-label {
+  display: block;
+  font-family: var(--font-body);
+  font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--muted); margin-bottom: 7px;
+}
+.nf-lead-input {
+  width: 100%; padding: 14px 14px;
+  border: 1px solid var(--border); border-radius: 2px;
+  font-size: 15px;  /* >=16px avoids iOS zoom-on-focus; 15px + the meta
+                       viewport setting used sitewide is the existing pattern */
+  background: #fff; color: var(--text);
+  min-height: 48px;
+}
+.nf-lead-input:focus { outline: none; border-color: #111; }
+.nf-lead-input.has-error { border-color: var(--nf-error); background: #fffafa; }
+
+.nf-lead-error {
+  font-family: var(--font-body);
+  font-size: 11.5px; color: var(--nf-error); margin-top: 6px; min-height: 1em;
+}
+
+.nf-lead-submit {
+  width: 100%; margin-top: 14px; padding: 16px;
+  background: #111; color: #fff;
+  font-family: var(--font-body);
+  font-size: 12px; font-weight: 700;
+  letter-spacing: 0.12em; text-transform: uppercase;
+  border: none; border-radius: 2px; min-height: 52px;
+}
+.nf-lead-submit:hover:not(:disabled) { background: #000; }
+.nf-lead-submit:disabled { background: #999; cursor: progress; }
+
+.nf-lead-decline {
+  display: block; width: 100%; margin-top: 14px;
+  font-family: var(--font-body);
+  font-size: 12px; color: var(--muted);
+  text-decoration: underline; background: none; border: none;
+  min-height: 44px;
+}
+.nf-lead-decline:hover { color: var(--text); }
+
+.nf-lead-fineprint {
+  font-family: var(--font-body);
+  font-size: 11px; color: #999; text-align: center; margin-top: 12px;
+}
+
+.nf-lead-code {
+  display: flex; align-items: stretch; gap: 8px;
+  margin: 18px 0 12px;
+}
+.nf-lead-code-value {
+  flex: 1; display: flex; align-items: center; justify-content: center;
+  padding: 16px 12px;
+  border: 1px dashed var(--nf-gold); background: #faf6ef;
+  font-family: var(--font-body);
+  font-size: 18px; font-weight: 700; letter-spacing: 0.18em;
+  color: var(--text); word-break: break-all;
+}
+.nf-lead-copy {
+  padding: 0 18px; background: #111; color: #fff;
+  font-family: var(--font-body);
+  font-size: 11px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;
+  border: none; border-radius: 2px; min-width: 76px;
+}
+.nf-lead-terms {
+  font-family: var(--font-body);
+  font-size: 11.5px; color: var(--muted); line-height: 1.5;
+}
+.nf-lead-shop {
+  display: block; text-align: center; margin-top: 18px; padding: 15px;
+  border: 1px solid #111; color: #111;
+  font-family: var(--font-body);
+  font-size: 12px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase;
+  text-decoration: none; min-height: 48px;
+}
+.nf-lead-shop:hover { background: #111; color: #fff; }
+
+/* ── Fragrance finder ──────────────────────────────────────────── */
+
+.nf-quiz-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 24px 18px 20px;
+  max-width: 620px; margin: 0 auto;
+}
+@media (min-width: 640px) { .nf-quiz-card { padding: 34px 34px 28px; } }
+
+.nf-quiz-progress {
+  height: 3px; background: var(--border); border-radius: 2px;
+  overflow: hidden; margin-bottom: 18px;
+}
+.nf-quiz-progress-fill {
+  height: 100%; background: var(--nf-gold);
+  transition: width 0.3s ease;
+}
+
+.nf-quiz-step {
+  font-family: var(--font-body);
+  font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase;
+  color: var(--nf-gold); margin-bottom: 10px;
+}
+.nf-quiz-question {
+  font-family: var(--font-heading);
+  font-size: 19px; line-height: 1.3; color: var(--text); margin-bottom: 20px;
+}
+@media (min-width: 640px) { .nf-quiz-question { font-size: 23px; } }
+
+.nf-quiz-options { display: flex; flex-direction: column; gap: 10px; }
+.nf-quiz-option {
+  width: 100%; text-align: left;
+  padding: 15px 16px; min-height: 52px;
+  border: 1px solid var(--border); border-radius: 2px;
+  background: #fff; color: var(--text);
+  font-family: var(--font-body); font-size: 14px; line-height: 1.4;
+  transition: border-color 0.15s, background 0.15s;
+}
+.nf-quiz-option:hover { border-color: #111; background: #fafafa; }
+.nf-quiz-option.is-selected { border-color: #111; background: #f4f1ea; font-weight: 500; }
+.nf-quiz-option:focus-visible { outline: 2px solid var(--nf-gold); outline-offset: 2px; }
+
+.nf-quiz-nav {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-top: 18px;
+}
+.nf-quiz-back, .nf-quiz-skip {
+  font-family: var(--font-body); font-size: 12px; color: var(--muted);
+  background: none; border: none; min-height: 44px; padding: 0 4px;
+}
+.nf-quiz-back:hover, .nf-quiz-skip:hover { color: var(--text); text-decoration: underline; }
+
+.nf-quiz-inline-note {
+  font-family: var(--font-body); font-size: 12px;
+  color: var(--nf-error); background: var(--nf-error-bg);
+  border: 1px solid var(--nf-error-brd); border-radius: 4px;
+  padding: 9px 12px; margin-bottom: 14px;
+}
+
+.nf-quiz-state {
+  display: flex; flex-direction: column; align-items: center; gap: 14px;
+  padding: 48px 20px; text-align: center;
+  font-family: var(--font-body); font-size: 13px; color: var(--muted);
+  max-width: 620px; margin: 0 auto;
+  border: 1px solid var(--border); border-radius: 4px;
+}
+.nf-quiz-state--error { color: var(--nf-error); border-color: var(--nf-error-brd); background: var(--nf-error-bg); }
+.nf-quiz-spinner {
+  width: 22px; height: 22px;
+  border: 2px solid var(--border); border-top-color: var(--nf-gold);
+  border-radius: 50%; animation: nf-spin 0.8s linear infinite;
+}
+
+.nf-quiz-product { display: flex; flex-direction: column; gap: 16px; }
+@media (min-width: 560px) { .nf-quiz-product { flex-direction: row; gap: 20px; } }
+
+.nf-quiz-product-img {
+  width: 100%; max-width: 200px; align-self: center;
+  aspect-ratio: 1 / 1; object-fit: cover;
+  background: var(--light-bg); border-radius: 2px;
+}
+@media (min-width: 560px) { .nf-quiz-product-img { width: 160px; flex: 0 0 160px; align-self: flex-start; } }
+
+.nf-quiz-product-info { flex: 1; min-width: 0; }
+.nf-quiz-product-name {
+  font-family: var(--font-heading);
+  font-size: 22px; color: var(--text); margin-bottom: 4px;
+}
+.nf-quiz-product-price {
+  font-family: var(--font-body);
+  font-size: 15px; font-weight: 700; color: var(--text); margin-bottom: 10px;
+}
+.nf-quiz-product-blurb {
+  font-family: var(--font-body);
+  font-size: 13px; line-height: 1.6; color: var(--muted); margin-bottom: 12px;
+}
+
+.nf-quiz-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
+.nf-quiz-tag {
+  font-family: var(--font-body);
+  font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
+  padding: 5px 9px; border: 1px solid var(--border);
+  border-radius: 2px; color: var(--muted); background: #fafafa;
+}
+
+.nf-quiz-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.nf-quiz-btn {
+  padding: 14px 22px; min-height: 48px;
+  background: #111; color: #fff;
+  font-family: var(--font-body);
+  font-size: 11px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase;
+  border: none; border-radius: 2px;
+}
+.nf-quiz-btn:hover:not(:disabled) { background: #000; }
+.nf-quiz-btn:disabled { background: #999; cursor: progress; }
+.nf-quiz-link {
+  font-family: var(--font-body); font-size: 12px;
+  color: var(--text); text-decoration: underline;
+}
+
+.nf-quiz-alt {
+  font-family: var(--font-body); font-size: 12.5px; color: var(--muted);
+  margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border);
+}
+.nf-quiz-alt a { color: var(--text); text-decoration: underline; }
+
+.nf-quiz-save {
+  margin-top: 20px; padding: 18px;
+  background: var(--light-bg); border-radius: 4px;
+}
+.nf-quiz-save.is-done { background: var(--nf-ok-bg); }
+.nf-quiz-save-title {
+  font-family: var(--font-heading); font-size: 15px; color: var(--text); margin-bottom: 5px;
+}
+.nf-quiz-save-sub {
+  font-family: var(--font-body); font-size: 12.5px; color: var(--muted);
+  line-height: 1.5; margin-bottom: 14px;
+}
+.nf-quiz-save.is-done .nf-quiz-save-sub { margin-bottom: 0; }
+.nf-quiz-save-label {
+  display: block; font-family: var(--font-body);
+  font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--muted); margin-bottom: 7px;
+}
+.nf-quiz-save-row { display: flex; flex-direction: column; gap: 10px; }
+@media (min-width: 480px) { .nf-quiz-save-row { flex-direction: row; } }
+
+.nf-quiz-input {
+  flex: 1; min-width: 0;
+  padding: 13px 14px; min-height: 48px;
+  border: 1px solid var(--border); border-radius: 2px;
+  font-size: 15px; background: #fff;
+}
+.nf-quiz-input:focus { outline: none; border-color: #111; }
+.nf-quiz-input.has-error { border-color: var(--nf-error); background: #fffafa; }
+.nf-quiz-error {
+  font-family: var(--font-body); font-size: 11.5px;
+  color: var(--nf-error); margin-top: 6px; min-height: 1em;
+}
+.nf-quiz-restart {
+  display: block; width: 100%; margin-top: 16px; min-height: 44px;
+  font-family: var(--font-body); font-size: 12px; color: var(--muted);
+  background: none; border: none; text-decoration: underline;
+}
+.nf-quiz-restart:hover { color: var(--text); }
+
+/* Home-page entry point, sitting under Shop by Mood */
+.nf-quiz-teaser {
+  max-width: var(--max-w); margin: 0 auto;
+  padding: 0 var(--gutter) 56px;
+}
+.nf-quiz-teaser-inner {
+  border: 1px solid var(--border); border-radius: 4px;
+  background: linear-gradient(180deg, #faf7f2 0%, #ffffff 100%);
+  padding: 32px 20px; text-align: center;
+}
+@media (min-width: 768px) { .nf-quiz-teaser-inner { padding: 44px 40px; } }
+.nf-quiz-teaser-eyebrow {
+  font-family: var(--font-heading);
+  font-size: 10px; letter-spacing: 0.28em; text-transform: uppercase;
+  color: var(--nf-gold); margin-bottom: 10px;
+}
+.nf-quiz-teaser-title {
+  font-family: var(--font-heading);
+  font-size: 22px; line-height: 1.25; color: var(--text); margin-bottom: 10px;
+}
+@media (min-width: 768px) { .nf-quiz-teaser-title { font-size: 30px; } }
+.nf-quiz-teaser-sub {
+  font-family: var(--font-body); font-size: 13px; line-height: 1.6;
+  color: var(--muted); max-width: 460px; margin: 0 auto 22px;
+}
+.nf-quiz-teaser-cta {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 15px 30px; min-height: 50px;
+  background: #111; color: #fff; text-decoration: none;
+  font-family: var(--font-body);
+  font-size: 11px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase;
+  border-radius: 2px;
+}
+.nf-quiz-teaser-cta:hover { background: #000; }
+
+/* ── Review form ───────────────────────────────────────────────── */
+
+.nf-review-page { max-width: 680px; margin: 0 auto; padding: 40px var(--gutter) 72px; }
+.nf-review-title {
+  font-family: var(--font-heading);
+  font-size: 24px; color: var(--text); margin-bottom: 8px;
+}
+@media (min-width: 640px) { .nf-review-title { font-size: 30px; } }
+.nf-review-sub {
+  font-family: var(--font-body); font-size: 13px; line-height: 1.6;
+  color: var(--muted); margin-bottom: 28px;
+}
+
+.nf-review-card {
+  border: 1px solid var(--border); border-radius: 4px;
+  padding: 22px 18px; background: #fff;
+}
+@media (min-width: 640px) { .nf-review-card { padding: 30px; } }
+
+.nf-review-field { margin-bottom: 20px; }
+.nf-review-label {
+  display: block; font-family: var(--font-body);
+  font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--muted); margin-bottom: 8px;
+}
+.nf-review-input, .nf-review-select, .nf-review-textarea {
+  width: 100%; padding: 13px 14px; min-height: 48px;
+  border: 1px solid var(--border); border-radius: 2px;
+  font-family: var(--font-body); font-size: 15px; background: #fff; color: var(--text);
+}
+.nf-review-textarea { min-height: 130px; resize: vertical; line-height: 1.6; }
+.nf-review-input:focus, .nf-review-select:focus, .nf-review-textarea:focus {
+  outline: none; border-color: #111;
+}
+.nf-review-input.has-error, .nf-review-select.has-error, .nf-review-textarea.has-error {
+  border-color: var(--nf-error); background: #fffafa;
+}
+
+/* Radio-backed star rating: real inputs, so it works with a keyboard and a
+   screen reader. Rendered right-to-left so ~ can light up the lower stars. */
+.nf-stars { display: inline-flex; flex-direction: row-reverse; gap: 4px; }
+.nf-stars input { position: absolute; opacity: 0; width: 0; height: 0; }
+.nf-stars label {
+  font-size: 32px; line-height: 1; color: #d8d8d8; cursor: pointer;
+  padding: 4px; min-width: 44px; min-height: 44px;
+  display: flex; align-items: center; justify-content: center;
+  transition: color 0.15s;
+}
+.nf-stars label:hover,
+.nf-stars label:hover ~ label,
+.nf-stars input:checked ~ label { color: var(--nf-gold); }
+.nf-stars input:focus-visible + label { outline: 2px solid #111; outline-offset: 2px; }
+
+.nf-review-file {
+  font-family: var(--font-body); font-size: 13px; color: var(--muted);
+}
+.nf-review-preview {
+  margin-top: 12px; max-width: 160px; border-radius: 2px;
+  border: 1px solid var(--border);
+}
+.nf-review-hint {
+  font-family: var(--font-body); font-size: 11px; color: #999;
+  margin-top: 6px; line-height: 1.5;
+}
+
+.nf-review-submit {
+  width: 100%; padding: 16px; min-height: 52px;
+  background: #111; color: #fff;
+  font-family: var(--font-body);
+  font-size: 12px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase;
+  border: none; border-radius: 2px;
+}
+.nf-review-submit:hover:not(:disabled) { background: #000; }
+.nf-review-submit:disabled { background: #999; cursor: progress; }
+
+.nf-review-state {
+  padding: 32px 20px; text-align: center;
+  border: 1px solid var(--border); border-radius: 4px;
+  font-family: var(--font-body); font-size: 13.5px; line-height: 1.6; color: var(--muted);
+}
+.nf-review-state.is-error { background: var(--nf-error-bg); border-color: var(--nf-error-brd); color: var(--nf-error); }
+.nf-review-state.is-done  { background: var(--nf-ok-bg);    border-color: var(--nf-ok-brd);    color: var(--nf-ok); }
+.nf-review-reward {
+  display: inline-block; margin-top: 14px; padding: 12px 20px;
+  border: 1px dashed var(--nf-gold); background: #faf6ef;
+  font-family: var(--font-body);
+  font-size: 16px; font-weight: 700; letter-spacing: 0.16em; color: var(--text);
+}
+
+/* ── Post-purchase account CTA (confirmation page) ─────────────── */
+
+.nf-account-cta {
+  width: 100%; margin-top: 22px; padding: 22px 18px;
+  border: 1px solid var(--nf-gold); border-radius: 4px;
+  background: linear-gradient(180deg, #faf7f2 0%, #ffffff 100%);
+  text-align: left;
+}
+@media (min-width: 640px) { .nf-account-cta { padding: 26px; } }
+.nf-account-cta-title {
+  font-family: var(--font-heading);
+  font-size: 17px; color: var(--text); margin-bottom: 6px;
+}
+.nf-account-cta-sub {
+  font-family: var(--font-body); font-size: 12.5px; line-height: 1.6;
+  color: var(--muted); margin-bottom: 16px;
+}
+.nf-account-cta-row { display: flex; flex-direction: column; gap: 10px; }
+@media (min-width: 520px) { .nf-account-cta-row { flex-direction: row; align-items: center; } }
+.nf-account-cta-btn {
+  flex: 1; display: inline-flex; align-items: center; justify-content: center;
+  padding: 14px 20px; min-height: 48px;
+  background: #111; color: #fff; text-decoration: none;
+  font-family: var(--font-body);
+  font-size: 11px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase;
+  border-radius: 2px; border: none;
+}
+.nf-account-cta-btn:hover { background: #000; }
+.nf-account-cta-skip {
+  font-family: var(--font-body); font-size: 12px; color: var(--muted);
+  text-decoration: underline; background: none; border: none;
+  min-height: 44px; padding: 0 8px;
+}
+.nf-account-cta-skip:hover { color: var(--text); }
+
+/* ── Account forms (login / register) ──────────────────────────── */
+
+.nf-auth-wrap { max-width: 440px; margin: 0 auto; padding: 40px var(--gutter) 72px; }
+.nf-auth-title {
+  font-family: var(--font-heading);
+  font-size: 24px; color: var(--text); margin-bottom: 8px;
+}
+.nf-auth-sub {
+  font-family: var(--font-body); font-size: 13px; line-height: 1.6;
+  color: var(--muted); margin-bottom: 24px;
+}
+.nf-auth-field { margin-bottom: 16px; }
+.nf-auth-label {
+  display: block; font-family: var(--font-body);
+  font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--muted); margin-bottom: 7px;
+}
+.nf-auth-input {
+  width: 100%; padding: 13px 14px; min-height: 48px;
+  border: 1px solid var(--border); border-radius: 2px;
+  font-family: var(--font-body); font-size: 15px; background: #fff; color: var(--text);
+}
+.nf-auth-input:focus { outline: none; border-color: #111; }
+.nf-auth-input.has-error { border-color: var(--nf-error); background: #fffafa; }
+.nf-auth-error {
+  font-family: var(--font-body); font-size: 11.5px;
+  color: var(--nf-error); margin-top: 5px;
+}
+.nf-auth-submit {
+  width: 100%; margin-top: 8px; padding: 16px; min-height: 52px;
+  background: #111; color: #fff;
+  font-family: var(--font-body);
+  font-size: 12px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase;
+  border: none; border-radius: 2px;
+}
+.nf-auth-submit:hover:not(:disabled) { background: #000; }
+.nf-auth-submit:disabled { background: #999; cursor: progress; }
+.nf-auth-status {
+  font-family: var(--font-body); font-size: 12.5px; line-height: 1.5;
+  padding: 11px 14px; border-radius: 4px; margin-bottom: 18px;
+  border: 1px solid transparent;
+}
+.nf-auth-status.is-error   { background: var(--nf-error-bg); border-color: var(--nf-error-brd); color: var(--nf-error); }
+.nf-auth-status.is-info    { background: var(--nf-info-bg);  border-color: var(--nf-info-brd);  color: var(--nf-info); }
+.nf-auth-status.is-success { background: var(--nf-ok-bg);    border-color: var(--nf-ok-brd);    color: var(--nf-ok); }
+.nf-auth-status a { color: inherit; text-decoration: underline; font-weight: 700; }
+.nf-auth-alt {
+  font-family: var(--font-body); font-size: 12.5px; color: var(--muted);
+  text-align: center; margin-top: 20px;
+}
+.nf-auth-alt a { color: var(--text); text-decoration: underline; }
+.nf-auth-divider {
+  display: flex; align-items: center; gap: 12px;
+  margin: 24px 0; font-family: var(--font-body);
+  font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: #bbb;
+}
+.nf-auth-divider::before, .nf-auth-divider::after {
+  content: ""; flex: 1; height: 1px; background: var(--border);
+}
+
+/* ── Shared: nothing should ever overflow horizontally ─────────── */
+.nf-lead-card, .nf-quiz-card, .nf-review-card, .nf-account-cta, .nf-auth-wrap {
+  max-width: 100%;
+}
+.nf-quiz-card img, .nf-review-card img { max-width: 100%; height: auto; }
+
+@media (prefers-reduced-motion: reduce) {
+  .nf-lead-popup, .nf-lead-card, .nf-quiz-progress-fill { transition: none; }
+  .btn-spinner, .nf-quiz-spinner { animation-duration: 2s; }
+}
+
+/* ── Cart drawer: touch-friendly controls ────────────────────────
+   Found by the 320px pass in test/browser-tests.js: the quantity
+   steppers (28px), the remove button (22px) and the drawer close
+   (30px) were all well under the 44px minimum comfortable tap
+   target, in the one component every mobile order goes through.
+   The visual size is unchanged — the hit area is expanded around
+   it, so the drawer looks identical and is far easier to use.
+   ──────────────────────────────────────────────────────────────── */
+
+.cart-close-btn {
+  min-width: 44px; min-height: 44px;
+  display: flex; align-items: center; justify-content: center;
+  margin: -8px -8px -8px 0;   /* absorb the extra size, keep the layout */
+}
+
+.cq-btn {
+  /* Keep the 28px box drawn, but extend the touchable area vertically
+     with a transparent pseudo-element so rows do not grow taller. */
+  position: relative;
+}
+.cq-btn::after {
+  content: "";
+  position: absolute;
+  top: -9px; bottom: -9px; left: -6px; right: -6px;
+}
+
+.cart-item-del {
+  position: relative;
+  min-width: 44px; min-height: 44px;
+  display: inline-flex; align-items: center; justify-content: flex-end;
+  margin-top: 0;
+}
+
+/* Width-based rather than (pointer: coarse): a narrow window on a laptop gets
+   the same roomy controls, and it does not depend on the browser reporting a
+   touch pointer at all. */
+@media (max-width: 768px) {
+  .cq-btn { width: 36px; height: 42px; }
+  .cq-val { width: 40px; height: 42px; }
+  .cart-upsell-add { width: 42px; height: 42px; font-size: 20px; }
+}
+
+/* The upsell "+" is a real control everywhere, not only on small screens. */
+.cart-upsell-add { position: relative; }
+.cart-upsell-add::after {
+  content: "";
+  position: absolute;
+  top: -7px; bottom: -7px; left: -7px; right: -7px;
+}
+/* Remaining touch targets in the shared header + cart, brought up to the 44px
+   minimum. Visual weight is unchanged — only the hit area grows. */
+.nf-icon-btn { min-width: 44px; min-height: 44px; }
+
+.btn-clear-cart {
+  min-height: 44px;
+  display: flex; align-items: center; justify-content: center;
+  padding: 6px 10px;
+}
+
+.cart-discovery-cta {
+  min-height: 44px;
+  display: flex !important; align-items: center; justify-content: center;
+}
+/* ── Promo code field (checkout) ─────────────────────────────── */
+
+.promo-row { display: flex; gap: 8px; align-items: stretch; }
+.promo-input {
+  flex: 1; min-width: 0;
+  padding: 13px 14px; min-height: 48px;
+  border: 1px solid var(--border); border-radius: 2px;
+  font-family: var(--font-body); font-size: 15px;
+  letter-spacing: 0.06em; text-transform: uppercase;
+  background: #fff; color: var(--text);
+}
+.promo-input:focus { outline: none; border-color: #111; }
+.promo-input.is-applied {
+  background: var(--nf-ok-bg); border-color: var(--nf-ok-brd);
+  color: var(--nf-ok); font-weight: 700;
+}
+.promo-apply {
+  flex: 0 0 auto; min-width: 96px; min-height: 48px;
+  padding: 0 18px;
+  background: #111; color: #fff;
+  font-family: var(--font-body);
+  font-size: 11px; font-weight: 700;
+  letter-spacing: 0.12em; text-transform: uppercase;
+  border: none; border-radius: 2px;
+}
+.promo-apply:hover:not(:disabled) { background: #000; }
+.promo-apply:disabled { background: #999; cursor: progress; }
+
+.promo-msg {
+  font-family: var(--font-body);
+  font-size: 12px; line-height: 1.5; margin-top: 8px; min-height: 1em;
+  color: var(--muted);
+}
+.promo-msg.is-success { color: var(--nf-ok); font-weight: 500; }
+.promo-msg.is-error   { color: var(--nf-error); }
+.promo-msg.is-info    { color: var(--muted); }
+
+@media (max-width: 380px) {
+  .promo-row { flex-direction: column; }
+  .promo-apply { width: 100%; }
 }

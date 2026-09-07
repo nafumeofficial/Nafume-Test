@@ -17,8 +17,12 @@
   <link href="../../css/style.css" rel="stylesheet"/>
   <link href="../../css/launch.css" rel="stylesheet"/>
   <script id="tailwind-config">
-    tailwind.config = {
-      theme: {
+    /* The Tailwind CDN is a third party. If it fails to load, 	ailwind is
+       undefined and this block used to throw an uncaught ReferenceError into
+       the console on every page. Guarded so a CDN outage degrades the styling
+       instead of raising a runtime error. */
+    if (typeof tailwind !== "undefined") {
+    tailwind.config = {      theme: {
         extend: {
           colors: {
             "surface": "#F9F5F0",
@@ -36,6 +40,7 @@
           }
         }
       }
+    }
     }
   </script>
 </head>
@@ -64,7 +69,7 @@
 
   <!-- ── ANNOUNCEMENT BAR ────────────────────────────────────────── -->
   <div class="nf-ann">
-    <div class="nf-ann-track">SUMMER SALE &nbsp;•&nbsp; &#8377;799 EACH &nbsp;•&nbsp; FREE SHIPPING ABOVE &#8377;999 &nbsp;•&nbsp; ORDERS CONFIRMED ON WHATSAPP &nbsp;•&nbsp; FOLLOW NAFUME ON INSTAGRAM &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;SUMMER SALE &nbsp;•&nbsp; &#8377;799 EACH &nbsp;•&nbsp; FREE SHIPPING ABOVE &#8377;999 &nbsp;•&nbsp; ORDERS CONFIRMED ON WHATSAPP &nbsp;•&nbsp; FOLLOW NAFUME ON INSTAGRAM &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</div>
+    <div class="nf-ann-track">SUMMER SALE &nbsp;•&nbsp; &#8377;799 EACH &nbsp;•&nbsp; FREE SHIPPING ABOVE &#8377;999 &nbsp;•&nbsp; SECURE ONLINE PAYMENT &amp; COD &nbsp;•&nbsp; FOLLOW NAFUME ON INSTAGRAM &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;SUMMER SALE &nbsp;•&nbsp; &#8377;799 EACH &nbsp;•&nbsp; FREE SHIPPING ABOVE &#8377;999 &nbsp;•&nbsp; SECURE ONLINE PAYMENT &amp; COD &nbsp;•&nbsp; FOLLOW NAFUME ON INSTAGRAM &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</div>
   </div>
 
   <!-- ── HEADER ─────────────────────────────────────────────────── -->
@@ -151,403 +156,492 @@
   <script src="../../js/state.js"></script>
   <script src="../../js/app.js"></script>
   <script src="../../js/commerce/config.js"></script>
+  <script src="../../js/commerce/api-client.js"></script>
   <script src="../../js/commerce/commerce-service.js"></script>
   <script src="../../js/commerce/customer-service.js"></script>
   <script src="../../js/commerce/offer-service.js"></script>
   <script src="../../js/launch.js"></script>
   <script src="../../js/commerce/operations-service.js"></script>
 
-  <!-- Account page logic -->
+  <!-- ── Account page ───────────────────────────────────────────────────────
+       Backed by the server session (HttpOnly cookie), not localStorage:
+         GET  /api/account/me       who am I + my orders
+         POST /api/account/login    email or phone + password
+         POST /api/otp/verify       phone OTP — also issues a real session, so
+                                    both routes resolve to the SAME customer
+         POST /api/account/logout   revokes the session server-side
+         POST /api/account/update   profile / address / marketing consent
+
+       Order history comes from the database, so it is correct on any device,
+       not just the browser the order was placed in.
+       ─────────────────────────────────────────────────────────────────────── -->
   <script>
-    var CS = window.CustomerService;
+    (function () {
+      "use strict";
 
-    function curr(n) { return "₹" + Number(n || 0).toLocaleString("en-IN"); }
-    function esc(s) {
-      return String(s == null ? "" : s).replace(/[&<>"]/g, function (ch) {
-        return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch];
-      });
-    }
-    function fmtDate(iso) {
-      if (!iso) return "—";
-      try { return new Date(iso).toLocaleDateString("en-IN", { year: "numeric", month: "short", day: "numeric" }); }
-      catch (e) { return "—"; }
-    }
-    function titleCase(s) {
-      s = String(s || "");
-      return s ? s.charAt(0).toUpperCase() + s.slice(1).replace(/_/g, " ") : "—";
-    }
-
-    function renderAccount() {
+      var API = window.NafumeAPI;
+      var CS  = window.CustomerService;      // still used for the header link
       var root = document.getElementById("account-root");
-      if (!root) return;
-      if (!CS) { root.innerHTML = errorBox("Account system unavailable. Please reload the page."); return; }
-      if (CS.isCustomerLoggedIn()) renderDashboard(root);
-      else renderLogin(root);
-    }
 
-    function errorBox(msg) {
-      return '<div style="max-width:480px;margin:60px auto;text-align:center;padding:40px 24px;">' +
-        '<p style="font-size:14px;color:#666;">' + esc(msg) + '</p></div>';
-    }
+      var current = { customer: null, orders: [], consent: {} };
 
-    /* ── LOGIN ─────────────────────────────────────────────────────── */
-    function renderLogin(root) {
-      root.innerHTML =
-        /* Page title */
-        '<div class="acct-page-header">' +
-          '<h1 class="acct-page-title">Log In</h1>' +
-        '</div>' +
+      /* ── helpers ──────────────────────────────────────────────────────── */
 
-        /* Breadcrumb */
-        '<div class="acct-breadcrumb-wrap">' +
-          '<nav class="acct-breadcrumb-nav" aria-label="Breadcrumb">' +
-            '<a href="/" class="acct-bc-link">Home</a>' +
-            '<span class="acct-bc-sep" aria-hidden="true">&#8250;</span>' +
-            '<span class="acct-bc-current">Account</span>' +
-          '</nav>' +
-        '</div>' +
-
-        /* Two-column content */
-        '<div class="acct-login-section">' +
-
-          /* Left — Log In form */
-          '<div class="acct-login-col">' +
-            '<h2 class="acct-col-heading">Log In</h2>' +
-
-            /* Step 1: phone input */
-            '<div id="acct-step-id">' +
-              '<input id="acct-identifier" class="acct-input" type="tel" autocomplete="tel" inputmode="numeric" maxlength="10" placeholder="10-digit mobile number" />' +
-              '<button id="acct-continue" class="acct-btn-signin" type="button">Send OTP</button>' +
-            '</div>' +
-
-            /* Step 2: OTP entry (hidden initially) */
-            '<div id="acct-step-otp" class="acct-otp-step" style="display:none;">' +
-              '<p class="acct-otp-note" id="acct-otp-target"></p>' +
-              '<input id="acct-otp" class="acct-input" type="text" inputmode="numeric" maxlength="6" placeholder="Enter 6-digit OTP" style="letter-spacing:0.25em;text-align:center;" />' +
-              '<button id="acct-verify" class="acct-btn-signin" type="button">Verify &amp; Sign In</button>' +
-              '<div style="margin-top:10px;display:flex;align-items:center;gap:10px;">' +
-                '<button id="acct-resend" class="acct-back-btn" type="button" style="margin-top:0;">Resend OTP</button>' +
-                '<span id="acct-resend-cd" style="font-size:12px;color:#888;"></span>' +
-              '</div>' +
-              '<button id="acct-back" class="acct-back-btn" type="button">Use a different number</button>' +
-            '</div>' +
-
-            '<p id="acct-msg" class="acct-form-msg"></p>' +
-          '</div>' +
-
-          /* Right — New Customer */
-          '<div class="acct-register-col">' +
-            '<h2 class="acct-col-heading">New Customer</h2>' +
-            '<p class="acct-register-desc">Sign up for early sale access plus tailored new arrivals, trends and promotions. To opt out, click unsubscribe in our emails.</p>' +
-            '<button id="acct-register-btn" class="acct-btn-register" type="button">Register</button>' +
-            '<p id="acct-register-msg" class="acct-register-msg"></p>' +
-          '</div>' +
-
-        '</div>';
-
-      /* Wire up events */
-      var identEl     = document.getElementById("acct-identifier");
-      var stepId      = document.getElementById("acct-step-id");
-      var stepOtp     = document.getElementById("acct-step-otp");
-      var msgEl       = document.getElementById("acct-msg");
-      var continueBtn = document.getElementById("acct-continue");
-      var verifyBtn   = document.getElementById("acct-verify");
-      var resendBtn   = document.getElementById("acct-resend");
-      var resendCdEl  = document.getElementById("acct-resend-cd");
-      var resendTimer = null;
-
-      function showMsg(text, kind) {
-        msgEl.textContent = text;
-        msgEl.className = "acct-form-msg " + (kind === "error" ? "is-error" : "is-info");
-      }
-      function clearMsg() {
-        msgEl.className = "acct-form-msg";
-        msgEl.textContent = "";
-      }
-      function startResendTimer(secs) {
-        resendBtn.disabled = true;
-        clearInterval(resendTimer);
-        var remaining = secs;
-        resendCdEl.textContent = "(" + remaining + "s)";
-        resendTimer = setInterval(function () {
-          remaining--;
-          if (remaining <= 0) {
-            clearInterval(resendTimer);
-            resendBtn.disabled = false;
-            resendCdEl.textContent = "";
-          } else {
-            resendCdEl.textContent = "(" + remaining + "s)";
-          }
-        }, 1000);
-      }
-      function doSendOtp(phone) {
-        continueBtn.disabled = true;
-        continueBtn.textContent = "Sending OTP…";
-        clearMsg();
-        CS.sendOtp(phone, function (res) {
-          continueBtn.disabled = false;
-          continueBtn.textContent = "Send OTP";
-          if (!res.success) { showMsg(res.message, "error"); return; }
-          stepId.style.display = "none";
-          stepOtp.style.display = "";
-          document.getElementById("acct-otp-target").textContent =
-            "OTP sent to +91 " + phone + ". Valid for 10 minutes.";
-          startResendTimer(30);
-          clearMsg();
-          document.getElementById("acct-otp").focus();
+      function curr(n) { return "₹" + Number(n || 0).toLocaleString("en-IN"); }
+      function esc(s) {
+        return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+          return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c];
         });
       }
+      function fmtDate(iso) {
+        if (!iso) return "—";
+        try { return new Date(iso).toLocaleDateString("en-IN", { year: "numeric", month: "short", day: "numeric" }); }
+        catch (e) { return "—"; }
+      }
+      function titleCase(s) {
+        s = String(s || "");
+        return s ? s.charAt(0).toUpperCase() + s.slice(1).replace(/_/g, " ") : "—";
+      }
+      function statusTone(order) {
+        if (order.paymentStatus === "paid") return "text-[#2e7d32]";
+        if (order.orderStatus === "cancelled") return "text-[#ba1a1a]";
+        return "text-accent-bronze";
+      }
 
-      /* Send OTP */
-      continueBtn.addEventListener("click", function () {
-        var phone = (identEl.value || "").replace(/\D/g, "").slice(-10);
-        if (phone.length !== 10 || !/^[6-9]/.test(phone)) {
-          showMsg("Please enter a valid 10-digit mobile number.", "error"); return;
-        }
-        doSendOtp(phone);
-      });
+      /* ── boot ─────────────────────────────────────────────────────────── */
 
-      /* Verify OTP */
-      verifyBtn.addEventListener("click", function () {
-        var otp   = (document.getElementById("acct-otp").value || "").replace(/\D/g, "");
-        var phone = (identEl.value || "").replace(/\D/g, "").slice(-10);
-        verifyBtn.disabled = true;
-        verifyBtn.textContent = "Verifying…";
-        clearMsg();
-        CS.verifyOtp(phone, otp, function (res) {
-          verifyBtn.disabled = false;
-          verifyBtn.textContent = "Verify & Sign In";
-          if (!res.success) { showMsg(res.message, "error"); return; }
-          renderAccount();
-        });
-      });
-
-      /* Resend OTP */
-      resendBtn.addEventListener("click", function () {
-        var phone = (identEl.value || "").replace(/\D/g, "").slice(-10);
-        resendBtn.disabled = true;
-        resendBtn.textContent = "Resending…";
-        clearMsg();
-        CS.sendOtp(phone, function (res) {
-          resendBtn.textContent = "Resend OTP";
-          if (!res.success) {
-            resendBtn.disabled = false;
-            showMsg(res.message, "error"); return;
-          }
-          showMsg("New OTP sent.", "info");
-          startResendTimer(30);
-        });
-      });
-
-      /* Back */
-      document.getElementById("acct-back").addEventListener("click", function () {
-        clearInterval(resendTimer);
-        stepOtp.style.display = "none";
-        stepId.style.display = "";
-        clearMsg();
-      });
-
-      /* Enter key on phone input */
-      identEl.addEventListener("keydown", function (e) {
-        if (e.key === "Enter") continueBtn.click();
-      });
-
-      /* Enter key on OTP input */
-      document.getElementById("acct-otp").addEventListener("keydown", function (e) {
-        if (e.key === "Enter") verifyBtn.click();
-      });
-
-      /* Register */
-      document.getElementById("acct-register-btn").addEventListener("click", function () {
-        window.location.href = "register";
-      });
-    }
-
-    /* ── DASHBOARD ─────────────────────────────────────────────────── */
-    function renderDashboard(root) {
-      var c = CS.getCurrentCustomer();
-      var a = (c && c.defaultAddress) || {};
-      var greetName = c.name || c.phone || c.email || "there";
-
-      var addrLines = [
-        a.addressLine1, a.addressLine2,
-        [a.city, a.state].filter(Boolean).join(", "),
-        a.pincode, a.country
-      ].filter(Boolean);
-      var addrHtml = addrLines.length
-        ? addrLines.map(function (l) { return esc(l); }).join("<br/>")
-        : '<span class="text-text-secondary/60">No saved address yet.</span>';
-
-      root.innerHTML =
-        '<div class="max-w-[1100px] mx-auto px-4 md:px-20 py-12 md:py-16">' +
-
-        /* Dashboard header */
-        '<div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 border-b border-border-muted pb-8 mb-10">' +
-          '<div>' +
-            '<span class="text-[10px] font-semibold text-accent-bronze uppercase tracking-[0.2em] mb-1 block">Your NAFUME Account</span>' +
-            '<h1 class="text-headline-md font-bold text-primary">Welcome, ' + esc(greetName) + '</h1>' +
-          '</div>' +
-          '<button id="acct-logout" class="text-[11px] font-semibold uppercase tracking-widest text-text-secondary border border-border-muted px-5 py-2.5 hover:bg-primary hover:text-white hover:border-primary transition-colors">Logout</button>' +
-        '</div>' +
-
-        /* Dashboard grid */
-        '<div class="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">' +
-          '<div class="lg:col-span-7 space-y-6">' +
-            '<h3 class="text-headline-sm font-semibold text-primary pb-3 border-b border-border-muted">Order History</h3>' +
-            '<div id="acct-orders" class="space-y-4"></div>' +
-          '</div>' +
-          '<div class="lg:col-span-5 space-y-6">' +
-            /* Profile */
-            '<div class="bg-white border border-border-muted p-6">' +
-              '<div class="flex justify-between items-center pb-2 border-b border-border-muted mb-4">' +
-                '<h4 class="text-label-sm font-bold uppercase tracking-widest text-primary">Profile</h4>' +
-                '<button id="acct-edit" class="text-[11px] font-semibold text-accent-bronze hover:text-primary">Edit</button>' +
-              '</div>' +
-              '<div class="text-xs text-text-secondary space-y-1.5">' +
-                '<p><strong class="text-primary">Name:</strong> ' + (esc(c.name) || "—") + '</p>' +
-                '<p><strong class="text-primary">Phone:</strong> ' + (esc(c.phone) || "—") + '</p>' +
-                '<p><strong class="text-primary">Email:</strong> ' + (esc(c.email) || "—") + '</p>' +
-                '<p><strong class="text-primary">Marketing:</strong> ' + (c.marketingConsent ? "Subscribed" : "Not subscribed") + '</p>' +
-              '</div>' +
-            '</div>' +
-            /* Address */
-            '<div class="bg-white border border-border-muted p-6">' +
-              '<h4 class="text-label-sm font-bold uppercase tracking-widest text-primary pb-2 border-b border-border-muted mb-4">Saved Address</h4>' +
-              '<p class="text-xs text-text-secondary font-light leading-relaxed">' + addrHtml + '</p>' +
-            '</div>' +
-          '</div>' +
-        '</div>' +
-
-        /* Edit form (hidden until Edit is clicked) */
-        '<div id="acct-edit-form" class="hidden mt-8 bg-white border border-border-muted p-6 md:p-8 max-w-2xl"></div>' +
-
-        '</div>';
-
-      renderOrders();
-
-      document.getElementById("acct-logout").addEventListener("click", function () {
-        CS.logoutCustomer();
-        renderAccount();
-      });
-      document.getElementById("acct-edit").addEventListener("click", function () {
-        renderEditForm(c);
-      });
-    }
-
-    /* ── ORDERS ─────────────────────────────────────────────────────── */
-    function awbLine(o) {
-      var t = (o && o.tracking) || {};
-      if (!t.awb) return "";
-      return '<p class="text-[11px] text-text-secondary mb-3">' +
-        '<span class="material-symbols-outlined text-[13px] align-middle text-accent-bronze">local_shipping</span> ' +
-        'AWB <strong class="text-primary">' + esc(t.awb) + '</strong>' +
-        (t.courierName ? ' · ' + esc(t.courierName) : '') + '</p>';
-    }
-
-    function renderOrders() {
-      var box = document.getElementById("acct-orders");
-      if (!box) return;
-      var orders = CS.getCustomerOrders();
-      if (!orders.length) {
-        box.innerHTML =
-          '<div class="bg-white border border-border-muted p-6 text-center text-sm text-text-secondary">' +
-          'No orders yet. Your past orders will appear here.' +
-          '<div class="mt-4"><a href="../collections/shop.html" class="inline-block bg-primary text-white px-6 py-3 text-[11px] font-semibold uppercase tracking-widest hover:bg-[#222]">Shop New Launches</a></div>' +
+      function renderLoading() {
+        root.innerHTML =
+          '<div class="nf-auth-wrap" style="text-align:center;padding-top:80px;">' +
+            '<span class="nf-quiz-spinner" style="margin:0 auto 16px;"></span>' +
+            '<p style="font-family:var(--font-body);font-size:13px;color:#777;">Loading your account…</p>' +
           '</div>';
-        return;
       }
-      box.innerHTML = orders.map(function (o) {
-        var t = o.totals || {};
-        return '<div class="bg-white border border-border-muted p-5">' +
-          '<div class="flex justify-between items-start mb-3">' +
-            '<div>' +
-              '<p class="text-[10px] uppercase tracking-widest text-text-secondary">Order</p>' +
-              '<p class="font-semibold text-primary text-sm">' + esc(o.orderId) + '</p>' +
-              '<p class="text-[11px] text-text-secondary mt-0.5">' + fmtDate(o.createdAt) + ' · ' + esc(titleCase(o.checkoutType)) + '</p>' +
+
+      function refresh() {
+        renderLoading();
+        API.me().then(function (res) {
+          if (res.offline) {
+            root.innerHTML =
+              '<div class="nf-auth-wrap"><p class="nf-auth-status is-error">' +
+              esc(res.message) + '</p>' +
+              '<button class="nf-auth-submit" onclick="window.location.reload()">Try again</button></div>';
+            return;
+          }
+          if (res.ok && res.data.authenticated) {
+            current.customer = res.data.customer;
+            current.orders   = res.data.orders || [];
+            current.consent  = res.data.consent || {};
+            renderDashboard();
+          } else {
+            renderLogin();
+          }
+        });
+      }
+
+      /* ── login ────────────────────────────────────────────────────────── */
+
+      function renderLogin() {
+        root.innerHTML =
+          '<div class="nf-auth-wrap">' +
+            '<nav class="acct-breadcrumb-nav" aria-label="Breadcrumb" style="margin-bottom:22px;">' +
+              '<a href="/" class="acct-bc-link">Home</a>' +
+              '<span class="acct-bc-sep" aria-hidden="true">&#8250;</span>' +
+              '<span class="acct-bc-current">Account</span>' +
+            '</nav>' +
+
+            '<h1 class="nf-auth-title">Sign in</h1>' +
+            '<p class="nf-auth-sub">Access your orders, saved address and preferences.</p>' +
+
+            '<p class="nf-auth-status" id="login-status" role="status" aria-live="polite" style="display:none;"></p>' +
+
+            /* password sign-in */
+            '<form id="login-form" novalidate>' +
+              '<div class="nf-auth-field">' +
+                '<label class="nf-auth-label" for="login-id">Email or mobile number</label>' +
+                '<input id="login-id" class="nf-auth-input" type="text" autocomplete="username" ' +
+                  'placeholder="you@example.com or 9876543210" required/>' +
+              '</div>' +
+              '<div class="nf-auth-field">' +
+                '<label class="nf-auth-label" for="login-pw">Password</label>' +
+                '<input id="login-pw" class="nf-auth-input" type="password" autocomplete="current-password" ' +
+                  'placeholder="Your password" required/>' +
+              '</div>' +
+              '<button type="submit" class="nf-auth-submit" id="login-submit">Sign in</button>' +
+            '</form>' +
+
+            '<p class="nf-auth-alt">New to NAFUME? <a href="register.html">Create an account</a></p>' +
+
+            '<div class="nf-auth-divider">or</div>' +
+
+            /* OTP sign-in — no password needed */
+            '<div id="otp-block">' +
+              '<h2 class="nf-auth-title" style="font-size:17px;">Sign in with a one-time code</h2>' +
+              '<p class="nf-auth-sub">We\'ll text a 6-digit code to your mobile number.</p>' +
+              '<div id="otp-step-phone">' +
+                '<div class="nf-auth-field">' +
+                  '<label class="nf-auth-label" for="otp-phone">Mobile number</label>' +
+                  '<input id="otp-phone" class="nf-auth-input" type="tel" inputmode="numeric" maxlength="10" ' +
+                    'autocomplete="tel" placeholder="10-digit mobile number"/>' +
+                '</div>' +
+                '<button type="button" class="nf-auth-submit" id="otp-send">Send code</button>' +
+              '</div>' +
+              '<div id="otp-step-code" style="display:none;">' +
+                '<div class="nf-auth-field">' +
+                  '<label class="nf-auth-label" for="otp-code">Enter the 6-digit code</label>' +
+                  '<input id="otp-code" class="nf-auth-input" type="text" inputmode="numeric" maxlength="6" ' +
+                    'autocomplete="one-time-code" placeholder="······" style="letter-spacing:0.3em;text-align:center;"/>' +
+                '</div>' +
+                '<button type="button" class="nf-auth-submit" id="otp-verify">Verify &amp; sign in</button>' +
+                '<p class="nf-auth-alt">' +
+                  '<button type="button" id="otp-resend" style="background:none;border:none;text-decoration:underline;color:#111;font-size:12.5px;">Resend code</button>' +
+                  '<span id="otp-countdown" style="color:#999;"></span> · ' +
+                  '<button type="button" id="otp-back" style="background:none;border:none;text-decoration:underline;color:#111;font-size:12.5px;">Use a different number</button>' +
+                '</p>' +
+              '</div>' +
+              '<p class="nf-auth-status" id="otp-status" role="status" aria-live="polite" style="display:none;"></p>' +
             '</div>' +
-            '<span class="text-sm font-bold text-primary whitespace-nowrap">' + curr(t.total) + '</span>' +
-          '</div>' +
-          '<div class="flex flex-wrap gap-2 mb-3">' +
-            '<span class="text-[10px] uppercase tracking-wider bg-surface border border-border-muted px-2 py-1">' + esc(titleCase(o.status)) + '</span>' +
-            '<span class="text-[10px] uppercase tracking-wider bg-surface border border-border-muted px-2 py-1">Pay: ' + esc(titleCase(o.paymentStatus)) + '</span>' +
-            '<span class="text-[10px] uppercase tracking-wider bg-surface border border-border-muted px-2 py-1">' + esc(titleCase(o.fulfillmentStatus)) + '</span>' +
-          '</div>' +
-          awbLine(o) +
-          '<div class="flex gap-3">' +
-            '<a href="../order/confirmation.html?orderId=' + encodeURIComponent(o.orderId) + '" class="text-[11px] font-semibold uppercase tracking-widest text-accent-bronze hover:text-primary">View</a>' +
-            '<a href="../order/track-order.html?order=' + encodeURIComponent(o.orderId) + '" class="text-[11px] font-semibold uppercase tracking-widest text-accent-bronze hover:text-primary">Track</a>' +
-          '</div>' +
-        '</div>';
-      }).join("");
-    }
+          '</div>';
 
-    /* ── EDIT PROFILE ──────────────────────────────────────────────── */
-    function renderEditForm(c) {
-      var box = document.getElementById("acct-edit-form");
-      if (!box) return;
-      var a = c.defaultAddress || {};
-      function field(label, id, val, type) {
-        return '<div>' +
-          '<label class="text-[11px] font-semibold uppercase tracking-widest text-text-secondary block mb-1">' + label + '</label>' +
-          '<input id="' + id + '" type="' + (type || "text") + '" value="' + esc(val) + '" class="w-full border border-border-muted px-3 py-2.5 text-sm focus:outline-none focus:border-accent-bronze"/>' +
-        '</div>';
+        wireLogin();
+        wireOtp();
       }
-      box.classList.remove("hidden");
-      box.innerHTML =
-        '<h3 class="text-headline-sm font-semibold text-primary mb-5">Edit Profile &amp; Address</h3>' +
-        '<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">' +
-          field("Name", "ed-name", c.name) +
-          field("Phone", "ed-phone", c.phone, "tel") +
-          field("Email", "ed-email", c.email, "email") +
-          field("PIN Code", "ed-pin", a.pincode) +
-        '</div>' +
-        '<div class="mt-4">' + field("Address Line 1", "ed-a1", a.addressLine1) + '</div>' +
-        '<div class="mt-4">' + field("Address Line 2", "ed-a2", a.addressLine2) + '</div>' +
-        '<div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">' +
-          field("City", "ed-city", a.city) +
-          field("State", "ed-state", a.state) +
-        '</div>' +
-        '<label class="flex items-center gap-2 mt-4 text-xs text-text-secondary cursor-pointer">' +
-          '<input id="ed-marketing" type="checkbox" ' + (c.marketingConsent ? "checked" : "") + '/> ' +
-          'Send me NAFUME offers and launch updates' +
-        '</label>' +
-        '<p id="ed-msg" class="text-xs mt-3 hidden"></p>' +
-        '<div class="flex gap-3 mt-5">' +
-          '<button id="ed-save" class="bg-primary text-white px-6 py-3 text-label-sm font-semibold uppercase tracking-widest hover:bg-[#222]">Save Changes</button>' +
-          '<button id="ed-cancel" class="border border-border-muted px-6 py-3 text-label-sm font-semibold uppercase tracking-widest hover:bg-surface-container">Cancel</button>' +
-        '</div>';
 
-      box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      function setStatus(id, message, kind, html) {
+        var box = document.getElementById(id);
+        if (!box) return;
+        box.style.display = "block";
+        box.className = "nf-auth-status is-" + (kind || "info");
+        if (html) box.innerHTML = message; else box.textContent = message;
+      }
+      function hideStatus(id) {
+        var box = document.getElementById(id);
+        if (box) { box.style.display = "none"; box.textContent = ""; }
+      }
 
-      document.getElementById("ed-cancel").addEventListener("click", function () {
-        box.classList.add("hidden");
-      });
-      document.getElementById("ed-save").addEventListener("click", function () {
-        var pRes = CS.createOrUpdateCustomer({
-          name:  document.getElementById("ed-name").value,
-          phone: document.getElementById("ed-phone").value,
-          email: document.getElementById("ed-email").value,
-          marketingConsent: document.getElementById("ed-marketing").checked
+      function wireLogin() {
+        var form   = document.getElementById("login-form");
+        var submit = document.getElementById("login-submit");
+
+        form.addEventListener("submit", function (e) {
+          e.preventDefault();
+          hideStatus("login-status");
+
+          var id = document.getElementById("login-id").value.trim();
+          var pw = document.getElementById("login-pw").value;
+
+          if (!id || !pw) {
+            setStatus("login-status", "Please enter both your email/mobile and your password.", "error");
+            return;
+          }
+
+          submit.disabled = true;
+          submit.textContent = "Signing in…";
+
+          API.login(id, pw).then(function (res) {
+            submit.disabled = false;
+            submit.textContent = "Sign in";
+            if (!res.ok) {
+              setStatus("login-status", res.message || "Sign in failed. Please try again.", "error");
+              return;
+            }
+            refresh();
+          });
         });
-        var aRes = CS.updateCustomerAddress({
-          addressLine1: document.getElementById("ed-a1").value,
-          addressLine2: document.getElementById("ed-a2").value,
-          city:    document.getElementById("ed-city").value,
-          state:   document.getElementById("ed-state").value,
-          pincode: document.getElementById("ed-pin").value
+      }
+
+      function wireOtp() {
+        var phoneEl = document.getElementById("otp-phone");
+        var sendBtn = document.getElementById("otp-send");
+        var verifyBtn = document.getElementById("otp-verify");
+        var resendBtn = document.getElementById("otp-resend");
+        var countdown = document.getElementById("otp-countdown");
+        var timer = null;
+
+        function startCountdown(secs) {
+          resendBtn.disabled = true;
+          clearInterval(timer);
+          var left = secs;
+          countdown.textContent = " (" + left + "s)";
+          timer = setInterval(function () {
+            left--;
+            if (left <= 0) { clearInterval(timer); resendBtn.disabled = false; countdown.textContent = ""; }
+            else countdown.textContent = " (" + left + "s)";
+          }, 1000);
+        }
+
+        function send(button, idleLabel) {
+          var phone = phoneEl.value.replace(/\D/g, "").slice(-10);
+          if (phone.length !== 10 || !/^[6-9]/.test(phone)) {
+            setStatus("otp-status", "Please enter a valid 10-digit mobile number.", "error");
+            return;
+          }
+          hideStatus("otp-status");
+          button.disabled = true;
+          button.textContent = "Sending…";
+
+          API.post("/api/otp/send", { phone: phone }).then(function (res) {
+            button.disabled = false;
+            button.textContent = idleLabel;
+            if (!res.ok) {
+              setStatus("otp-status", res.message || "We couldn't send the code. Please try again.", "error");
+              return;
+            }
+            document.getElementById("otp-step-phone").style.display = "none";
+            document.getElementById("otp-step-code").style.display = "";
+            setStatus("otp-status", "Code sent to +91 " + phone + ".", "info");
+            startCountdown(res.data.cooldownSeconds || 30);
+            try { document.getElementById("otp-code").focus(); } catch (e) {}
+          });
+        }
+
+        sendBtn.addEventListener("click", function () { send(sendBtn, "Send code"); });
+        resendBtn.addEventListener("click", function () { send(resendBtn, "Resend code"); });
+
+        verifyBtn.addEventListener("click", function () {
+          var phone = phoneEl.value.replace(/\D/g, "").slice(-10);
+          var code  = document.getElementById("otp-code").value.replace(/\D/g, "");
+          if (code.length !== 6) {
+            setStatus("otp-status", "Please enter the 6-digit code.", "error");
+            return;
+          }
+          hideStatus("otp-status");
+          verifyBtn.disabled = true;
+          verifyBtn.textContent = "Verifying…";
+
+          API.post("/api/otp/verify", { phone: phone, otp: code }).then(function (res) {
+            verifyBtn.disabled = false;
+            verifyBtn.textContent = "Verify & sign in";
+            if (!res.ok) {
+              setStatus("otp-status", res.message || "That code didn't work. Please try again.", "error");
+              return;
+            }
+            if (res.data.session === false) {
+              // OTP was correct but no session could be created — say so plainly
+              // rather than pretending they are signed in.
+              setStatus("otp-status",
+                "Your number is verified, but we couldn't open your account session. Please try again shortly.", "error");
+              return;
+            }
+            clearInterval(timer);
+            refresh();
+          });
         });
-        var emsg = document.getElementById("ed-msg");
-        if (!pRes.success || !aRes.success) {
-          emsg.textContent = (pRes.message || aRes.message || "Could not save your details.");
-          emsg.className = "text-xs mt-3 text-[#ba1a1a]";
-          emsg.classList.remove("hidden");
+
+        document.getElementById("otp-back").addEventListener("click", function () {
+          clearInterval(timer);
+          document.getElementById("otp-step-code").style.display = "none";
+          document.getElementById("otp-step-phone").style.display = "";
+          hideStatus("otp-status");
+        });
+      }
+
+      /* ── dashboard ────────────────────────────────────────────────────── */
+
+      function renderDashboard() {
+        var c = current.customer;
+        var a = c.address || {};
+        var greet = (c.name && c.name.split(" ")[0]) || c.phone || c.email || "there";
+
+        var addrLines = [a.line1, a.line2, [a.city, a.state].filter(Boolean).join(", "), a.pincode, a.country]
+          .filter(Boolean).map(esc).join("<br/>");
+
+        root.innerHTML =
+          '<div class="max-w-[1100px] mx-auto px-4 md:px-20 py-12 md:py-16">' +
+
+            '<div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 border-b border-border-muted pb-8 mb-10">' +
+              '<div>' +
+                '<span class="text-[10px] font-semibold text-accent-bronze uppercase tracking-[0.2em] mb-1 block">Your NAFUME Account</span>' +
+                '<h1 class="text-headline-md font-bold text-primary">Welcome, ' + esc(greet) + '</h1>' +
+              '</div>' +
+              '<button id="acct-logout" class="text-[11px] font-semibold uppercase tracking-widest text-text-secondary border border-border-muted px-5 py-2.5 hover:bg-primary hover:text-white hover:border-primary transition-colors">Logout</button>' +
+            '</div>' +
+
+            '<p class="nf-auth-status" id="acct-status" role="status" aria-live="polite" style="display:none;"></p>' +
+
+            '<div class="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">' +
+              '<div class="lg:col-span-7 space-y-6">' +
+                '<h2 class="text-headline-sm font-semibold text-primary pb-3 border-b border-border-muted">Order History</h2>' +
+                '<div id="acct-orders" class="space-y-4"></div>' +
+              '</div>' +
+              '<div class="lg:col-span-5 space-y-6">' +
+                '<div class="bg-white border border-border-muted p-6">' +
+                  '<div class="flex justify-between items-center pb-2 border-b border-border-muted mb-4">' +
+                    '<h3 class="text-label-sm font-bold uppercase tracking-widest text-primary">Profile</h3>' +
+                    '<button id="acct-edit" class="text-[11px] font-semibold text-accent-bronze hover:text-primary">Edit</button>' +
+                  '</div>' +
+                  '<div class="text-xs text-text-secondary space-y-1.5">' +
+                    '<p><strong class="text-primary">Name:</strong> ' + (esc(c.name) || "—") + '</p>' +
+                    '<p><strong class="text-primary">Phone:</strong> ' + (esc(c.phone) || "—") + '</p>' +
+                    '<p><strong class="text-primary">Email:</strong> ' + (esc(c.email) || "—") + '</p>' +
+                    '<p><strong class="text-primary">WhatsApp updates:</strong> ' +
+                      (current.consent.whatsapp ? "Subscribed" : "Not subscribed") + '</p>' +
+                  '</div>' +
+                '</div>' +
+                '<div class="bg-white border border-border-muted p-6">' +
+                  '<h3 class="text-label-sm font-bold uppercase tracking-widest text-primary pb-2 border-b border-border-muted mb-4">Saved Address</h3>' +
+                  '<p class="text-xs text-text-secondary font-light leading-relaxed">' +
+                    (addrLines || '<span class="text-text-secondary/60">No saved address yet.</span>') + '</p>' +
+                '</div>' +
+              '</div>' +
+            '</div>' +
+
+            '<div id="acct-edit-form" class="hidden mt-8 bg-white border border-border-muted p-6 md:p-8 max-w-2xl"></div>' +
+          '</div>';
+
+        renderOrders();
+
+        document.getElementById("acct-logout").addEventListener("click", function () {
+          var btn = this;
+          btn.disabled = true; btn.textContent = "Logging out…";
+          API.logout().then(function () { refresh(); });
+        });
+        document.getElementById("acct-edit").addEventListener("click", renderEditForm);
+      }
+
+      function renderOrders() {
+        var box = document.getElementById("acct-orders");
+        if (!box) return;
+
+        if (!current.orders.length) {
+          box.innerHTML =
+            '<div class="bg-white border border-border-muted p-6 text-center text-sm text-text-secondary">' +
+              'No orders yet. Once you place one, it will appear here automatically.' +
+              '<div class="mt-4"><a href="../collections/shop.html" class="inline-block bg-primary text-white px-6 py-3 text-[11px] font-semibold uppercase tracking-widest hover:bg-[#222]">Shop New Launches</a></div>' +
+            '</div>';
           return;
         }
-        renderAccount();
-      });
-    }
 
-    document.addEventListener("DOMContentLoaded", renderAccount);
+        box.innerHTML = current.orders.map(function (o) {
+          var t = o.totals || {};
+          var d = o.delivery || {};
+          var reviewable = o.paymentStatus === "paid" && d.deliveredAt && !(o.review && o.review.submitted);
+          return '<div class="bg-white border border-border-muted p-5">' +
+            '<div class="flex justify-between items-start mb-3 gap-3">' +
+              '<div class="min-w-0">' +
+                '<p class="text-[10px] uppercase tracking-widest text-text-secondary">Order</p>' +
+                '<p class="font-semibold text-primary text-sm break-all">' + esc(o.orderId) + '</p>' +
+                '<p class="text-[11px] text-text-secondary mt-0.5">' + fmtDate(o.createdAt) + ' · ' +
+                  esc(o.paymentMethod === "cod" ? "Cash on Delivery" : "Paid online") + '</p>' +
+              '</div>' +
+              '<span class="text-sm font-bold text-primary whitespace-nowrap">' + curr(t.total) + '</span>' +
+            '</div>' +
+            '<div class="flex flex-wrap gap-2 mb-3">' +
+              '<span class="text-[10px] uppercase tracking-wider bg-surface border border-border-muted px-2 py-1 ' + statusTone(o) + '">' +
+                esc(titleCase(o.orderStatus)) + '</span>' +
+              '<span class="text-[10px] uppercase tracking-wider bg-surface border border-border-muted px-2 py-1">Pay: ' +
+                esc(titleCase(o.paymentStatus)) + '</span>' +
+              '<span class="text-[10px] uppercase tracking-wider bg-surface border border-border-muted px-2 py-1">' +
+                esc(titleCase(o.fulfillmentStatus)) + '</span>' +
+            '</div>' +
+            (d.awb ? '<p class="text-[11px] text-text-secondary mb-3">AWB <strong class="text-primary">' +
+                esc(d.awb) + '</strong>' + (d.courierName ? ' · ' + esc(d.courierName) : '') + '</p>' : '') +
+            '<ul class="text-[11px] text-text-secondary mb-3 space-y-0.5">' +
+              (o.items || []).map(function (i) {
+                return '<li>' + esc(i.name) + ' × ' + esc(i.quantity) + '</li>';
+              }).join("") +
+            '</ul>' +
+            '<div class="flex flex-wrap gap-3">' +
+              '<a href="../order/confirmation.html?orderId=' + encodeURIComponent(o.orderId) + '" class="text-[11px] font-semibold uppercase tracking-widest text-accent-bronze hover:text-primary">View</a>' +
+              '<a href="../order/track-order.html?order=' + encodeURIComponent(o.orderId) + '" class="text-[11px] font-semibold uppercase tracking-widest text-accent-bronze hover:text-primary">Track</a>' +
+              (reviewable
+                ? '<a href="../order/review.html?orderId=' + encodeURIComponent(o.orderId) + '" class="text-[11px] font-semibold uppercase tracking-widest text-primary underline">Write a review</a>'
+                : '') +
+              (o.review && o.review.submitted
+                ? '<span class="text-[11px] uppercase tracking-widest text-text-secondary/70">Reviewed ✓</span>'
+                : '') +
+            '</div>' +
+          '</div>';
+        }).join("");
+      }
+
+      /* ── edit profile ─────────────────────────────────────────────────── */
+
+      function renderEditForm() {
+        var box = document.getElementById("acct-edit-form");
+        var c = current.customer;
+        var a = c.address || {};
+
+        function field(label, id, value, type) {
+          return '<div>' +
+            '<label class="nf-auth-label" for="' + id + '">' + label + '</label>' +
+            '<input id="' + id + '" type="' + (type || "text") + '" value="' + esc(value || "") +
+              '" class="nf-auth-input"/>' +
+          '</div>';
+        }
+
+        box.classList.remove("hidden");
+        box.innerHTML =
+          '<h3 class="text-headline-sm font-semibold text-primary mb-5">Edit profile &amp; address</h3>' +
+          '<p class="nf-auth-status" id="edit-status" role="status" style="display:none;"></p>' +
+          '<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">' +
+            field("Name", "ed-name", c.name) +
+            field("Phone", "ed-phone", c.phone, "tel") +
+            field("Email", "ed-email", c.email, "email") +
+            field("PIN code", "ed-pin", a.pincode) +
+          '</div>' +
+          '<div class="mt-4">' + field("Address line 1", "ed-a1", a.line1) + '</div>' +
+          '<div class="mt-4">' + field("Address line 2", "ed-a2", a.line2) + '</div>' +
+          '<div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">' +
+            field("City", "ed-city", a.city) +
+            field("State", "ed-state", a.state) +
+          '</div>' +
+          '<label class="consent-row" style="margin-top:16px;" for="ed-whatsapp">' +
+            '<input id="ed-whatsapp" type="checkbox"' + (current.consent.whatsapp ? " checked" : "") + '/>' +
+            '<span class="consent-text">' +
+              '<span class="consent-label">Get order updates + fragrance recommendations on WhatsApp</span>' +
+              '<span class="consent-hint">Unticking this stops all NAFUME marketing messages to your number.</span>' +
+            '</span>' +
+          '</label>' +
+          '<div class="flex gap-3 mt-5">' +
+            '<button id="ed-save" class="bg-primary text-white px-6 py-3 text-label-sm font-semibold uppercase tracking-widest hover:bg-[#222]">Save changes</button>' +
+            '<button id="ed-cancel" class="border border-border-muted px-6 py-3 text-label-sm font-semibold uppercase tracking-widest hover:bg-surface-container">Cancel</button>' +
+          '</div>';
+
+        try { box.scrollIntoView({ behavior: "smooth", block: "nearest" }); } catch (e) {}
+
+        document.getElementById("ed-cancel").addEventListener("click", function () {
+          box.classList.add("hidden");
+        });
+
+        document.getElementById("ed-save").addEventListener("click", function () {
+          var btn = this;
+          btn.disabled = true; btn.textContent = "Saving…";
+          hideStatus("edit-status");
+
+          API.updateAccount({
+            name:  document.getElementById("ed-name").value,
+            phone: document.getElementById("ed-phone").value,
+            email: document.getElementById("ed-email").value,
+            address: {
+              line1:   document.getElementById("ed-a1").value,
+              line2:   document.getElementById("ed-a2").value,
+              city:    document.getElementById("ed-city").value,
+              state:   document.getElementById("ed-state").value,
+              pincode: document.getElementById("ed-pin").value
+            },
+            whatsappOptIn: document.getElementById("ed-whatsapp").checked
+          }).then(function (res) {
+            btn.disabled = false; btn.textContent = "Save changes";
+            if (!res.ok) {
+              setStatus("edit-status", res.message || "We couldn't save your details.", "error");
+              return;
+            }
+            current.customer = res.data.customer;
+            current.consent  = res.data.consent || {};
+            renderDashboard();
+          });
+        });
+      }
+
+      /* ── go ───────────────────────────────────────────────────────────── */
+      if (!API) {
+        root.innerHTML = '<div class="nf-auth-wrap"><p class="nf-auth-status is-error">' +
+          'Account system unavailable. Please reload the page.</p></div>';
+      } else {
+        refresh();
+      }
+    })();
   </script>
 
 </body>

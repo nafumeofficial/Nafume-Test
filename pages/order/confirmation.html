@@ -6,7 +6,7 @@
     <link rel="apple-touch-icon" href="/assets/logo/logo-mark.png"/>
     <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
     <title>Thank You For Your Order | NAFUME Artisan Luxe</title>
-    <meta name="description" content="Your NAFUME order has been received. Confirm it on WhatsApp to complete your purchase and we'll dispatch your fragrance within 24 hours."/>
+    <meta name="description" content="Your NAFUME order is confirmed. We'll dispatch your fragrance within 24 hours and email your tracking details."/>
     <meta name="robots" content="noindex, nofollow"/>
     <!-- Tailwind CSS v3 CDN -->
     <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
@@ -22,7 +22,11 @@
       #global-footer .footer-link:hover { color: #fff; text-decoration: underline; text-underline-offset: 3px; }
     </style>
     <script id="tailwind-config">
-        tailwind.config = {
+        /* Guarded: the Tailwind CDN is a third party. If it fails to load,
+         `tailwind` is undefined and this block threw an uncaught
+         ReferenceError on every page load. */
+      if (typeof tailwind !== "undefined") {
+      tailwind.config = {
             theme: {
                 extend: {
                     colors: {
@@ -55,6 +59,7 @@
                 }
             }
         }
+      }
     </script>
 </head>
 <body class="antialiased min-h-screen flex flex-col bg-surface text-primary">
@@ -66,7 +71,7 @@
 
     <!-- 2. ANNOUNCEMENT BAR -->
     <div class="nf-ann">
-      <div class="nf-ann-track">SUMMER SALE &nbsp;•&nbsp; &#8377;799 EACH &nbsp;•&nbsp; FREE SHIPPING ABOVE &#8377;999 &nbsp;•&nbsp; ORDERS CONFIRMED ON WHATSAPP &nbsp;•&nbsp; FOLLOW NAFUME ON INSTAGRAM &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;SUMMER SALE &nbsp;•&nbsp; &#8377;799 EACH &nbsp;•&nbsp; FREE SHIPPING ABOVE &#8377;999 &nbsp;•&nbsp; ORDERS CONFIRMED ON WHATSAPP &nbsp;•&nbsp; FOLLOW NAFUME ON INSTAGRAM &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</div>
+      <div class="nf-ann-track">SUMMER SALE &nbsp;•&nbsp; &#8377;799 EACH &nbsp;•&nbsp; FREE SHIPPING ABOVE &#8377;999 &nbsp;•&nbsp; SECURE ONLINE PAYMENT &amp; COD &nbsp;•&nbsp; FOLLOW NAFUME ON INSTAGRAM &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;SUMMER SALE &nbsp;•&nbsp; &#8377;799 EACH &nbsp;•&nbsp; FREE SHIPPING ABOVE &#8377;999 &nbsp;•&nbsp; SECURE ONLINE PAYMENT &amp; COD &nbsp;•&nbsp; FOLLOW NAFUME ON INSTAGRAM &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</div>
     </div>
 
     <!-- 3. HEADER (logo row + nav row) -->
@@ -160,10 +165,8 @@
             <div class="w-full bg-white border border-border-muted rounded shadow-lg p-6 md:p-12 text-center flex flex-col items-center justify-center min-h-[460px]" id="confirmation-box">
                 <!-- Dynamically populated via JS -->
             </div>
-            <!-- Shopify secure-checkout note (Upgrade 2): shown for shoppers who
-                 completed payment on the hosted Shopify checkout instead of WhatsApp. -->
             <p class="text-[11px] text-text-secondary/80 font-light text-center mt-5 max-w-md leading-relaxed">
-                If you completed payment through secure checkout, your order confirmation will be sent by email/SMS.
+                A copy of this confirmation has been emailed to you. Keep your order ID handy for tracking and support.
             </p>
         </div>
 
@@ -176,10 +179,11 @@
     <script src="../../js/state.js"></script>
     <script src="../../js/app.js"></script>
 
-    <!-- COMMERCE FOUNDATION (Upgrade 1) — reads the new structured order schema -->
+    <!-- COMMERCE FOUNDATION — the API client is the source of truth for orders;
+         commerce-service.js remains as the offline cache. -->
     <script src="../../js/commerce/config.js"></script>
+    <script src="../../js/commerce/api-client.js"></script>
     <script src="../../js/commerce/commerce-service.js"></script>
-    <!-- Customer accounts (Upgrade 3) — header link + saved-to-account note -->
     <script src="../../js/commerce/customer-service.js"></script>
 
     <!-- DYNAMIC ORDER LOAD SCRIPT (new order schema via window.Commerce) -->
@@ -190,10 +194,10 @@
 
         function humanOrderStatus(s) {
             const map = {
-                pending_whatsapp_confirmation: "WhatsApp Confirmation Pending",
+                created:   "Order Placed",
                 confirmed: "Confirmed",
                 cancelled: "Cancelled",
-                shipped: "Shipped",
+                shipped:   "Shipped",
                 delivered: "Delivered"
             };
             return map[s] || (s ? String(s).replace(/_/g, " ") : "Pending");
@@ -203,7 +207,29 @@
             return s ? s.charAt(0).toUpperCase() + s.slice(1) : "—";
         }
 
-        document.addEventListener("DOMContentLoaded", () => {
+        /* Loads the order from the SERVER first — it is the source of truth and
+           works on any device, unlike the old localStorage-only lookup. The
+           local cache is only a fallback for when the network is down.
+
+           A guest has no session, so ownership is proved with the contact
+           detail captured at checkout (stored per order id by the API client). */
+        async function loadOrder(orderId) {
+            if (window.NafumeAPI) {
+                const res = await window.NafumeAPI.lookupOrder(orderId);
+                if (res.ok && res.data.order) {
+                    return { order: window.NafumeAPI.toLocalOrder(res.data.order), source: "server" };
+                }
+                // Offline: fall through to the cache rather than showing an error.
+                if (!res.offline && res.status !== 404) {
+                    return { order: null, source: "error", message: res.message };
+                }
+            }
+            const local = (window.Commerce && window.Commerce.getOrderById)
+                ? window.Commerce.getOrderById(orderId) : null;
+            return { order: local, source: local ? "cache" : "none" };
+        }
+
+        document.addEventListener("DOMContentLoaded", async () => {
             const params  = new URLSearchParams(window.location.search);
             const orderId = params.get("orderId");
             const box     = document.getElementById("confirmation-box");
@@ -225,20 +251,29 @@
                 return;
             }
 
-            const order = (window.Commerce && window.Commerce.getOrderById)
-                ? window.Commerce.getOrderById(orderId) : null;
+            // Loading state — the lookup is a network call, so never leave the
+            // customer staring at an empty box.
+            box.innerHTML = `
+                <span class="material-symbols-outlined text-4xl text-accent-bronze mb-4 animate-pulse">receipt_long</span>
+                <p class="text-body-md text-text-secondary font-light">Loading your order…</p>
+            `;
+
+            const loaded = await loadOrder(orderId);
+            const order  = loaded.order;
             currentActiveOrder = order;
 
-            // Graceful fallback: order not found on this device
+            // Graceful fallback: order could not be loaded
             if (!order) {
                 box.innerHTML = `
                     <span class="material-symbols-outlined text-4xl text-[#ba1a1a] mb-4">error_outline</span>
                     <h2 class="text-headline-sm font-semibold text-primary mb-3">Order Not Found</h2>
                     <p class="text-body-md text-text-secondary font-light max-w-sm mx-auto mb-8 leading-relaxed">
-                        We couldn't find order <strong>${orderId}</strong> saved on this device's browser. If you just placed it on another device, please contact us on WhatsApp.
+                        ${loaded.message
+                            ? loaded.message
+                            : `We couldn't load order <strong>${orderId}</strong>. If you placed it on another device, look it up on the Track Order page using your order ID and the email or phone you used.`}
                     </p>
                     <div class="flex flex-col sm:flex-row gap-4 justify-center w-full">
-                        <a href="/" class="inline-flex justify-center px-8 py-4 bg-primary text-white text-label-sm font-semibold uppercase tracking-widest hover:bg-[#222] transition-colors rounded-sm">Return Home</a>
+                        <a href="track-order.html" class="inline-flex justify-center px-8 py-4 bg-primary text-white text-label-sm font-semibold uppercase tracking-widest hover:bg-[#222] transition-colors rounded-sm">Track an Order</a>
                         <button onclick="contactSupport()" class="inline-flex justify-center items-center gap-2 px-8 py-4 bg-transparent border border-primary text-primary text-label-sm font-semibold uppercase tracking-widest hover:bg-primary hover:text-white transition-all rounded-sm">
                             <span class="material-symbols-outlined text-[18px]">chat</span> Contact on WhatsApp
                         </button>
@@ -265,12 +300,13 @@
                     </div>`;
             });
 
-            // Razorpay-verified orders get a distinct "Payment Successful" view.
-            // Never trust checkoutType alone — paymentStatus must also be "paid",
-            // which is only ever set after api/razorpay/verify-payment.js succeeds.
-            const isRazorpayPaid = order.checkoutType === "razorpay" && order.paymentStatus === "paid";
+            // The order already exists on the server either way. The only
+            // distinction now is whether the money has been collected (online)
+            // or is due on delivery (COD) — WhatsApp is no longer a step.
+            const isPaid = order.paymentStatus === "paid";
+            const isCod  = order.paymentMethod === "cod" || order.checkoutType === "cod";
 
-            const headerHtml = isRazorpayPaid ? `
+            const headerHtml = isPaid ? `
                 <span class="material-symbols-outlined text-4xl text-[#2e7d32] mb-4">check_circle</span>
                 <span class="text-[10px] font-semibold text-[#2e7d32] uppercase tracking-[0.2em] mb-2 block">Payment Successful</span>
                 <h2 class="text-headline-sm font-semibold text-primary mb-4 italic">Thank You — Your Order is Confirmed</h2>
@@ -278,48 +314,28 @@
                 <div class="bg-[#2e7d32]/10 border border-[#2e7d32]/20 p-4 rounded text-left mb-6 text-xs text-primary leading-relaxed font-light flex items-start gap-3">
                     <span class="material-symbols-outlined text-[#2e7d32] text-[18px] flex-shrink-0 mt-0.5">verified</span>
                     <div>
-                        <strong class="font-semibold text-[#2e7d32] uppercase tracking-wider block mb-1">Paid Online via Razorpay</strong>
-                        Your payment has been verified. We'll dispatch your order within 24 hours — no further action needed.
+                        <strong class="font-semibold text-[#2e7d32] uppercase tracking-wider block mb-1">Paid Online — Verified</strong>
+                        Your payment has been verified and your order is saved. We'll dispatch within 24 hours and email your tracking details. Nothing else is needed from you.
                         ${order.razorpay ? `<br/><span class="text-text-secondary">Payment ID: ${order.razorpay.paymentId || "—"}</span>` : ""}
                     </div>
-                </div>
-
-                <div class="bg-[#25D366]/10 border border-[#25D366]/30 p-4 rounded text-left mb-6 text-xs text-primary leading-relaxed font-light flex items-start gap-3">
-                    <span class="material-symbols-outlined text-[#25D366] text-[18px] flex-shrink-0 mt-0.5">notifications_active</span>
-                    <div class="flex-grow">
-                        <strong class="font-semibold text-[#128C4A] uppercase tracking-wider block mb-1">One More Step</strong>
-                        We tried to notify our team on WhatsApp automatically — if nothing opened, please tap below so we can start packing your order right away.
-                        <button onclick="notifyNafumeOnWhatsApp()" class="mt-3 inline-flex items-center gap-2 px-5 py-2.5 bg-[#25D366] text-white text-label-sm font-semibold uppercase tracking-widest rounded-sm hover:bg-[#1ebe5d] transition-colors">
-                            <span class="material-symbols-outlined text-[16px]">chat</span> Notify NAFUME on WhatsApp
-                        </button>
-                    </div>
                 </div>` : `
-                <span class="material-symbols-outlined text-4xl text-accent-bronze mb-4">verified</span>
-                <span class="text-[10px] font-semibold text-accent-bronze uppercase tracking-[0.2em] mb-2 block">Order Received</span>
-                <h2 class="text-headline-sm font-semibold text-primary mb-4 italic">Thank You — Confirm on WhatsApp</h2>
+                <span class="material-symbols-outlined text-4xl text-[#2e7d32] mb-4">check_circle</span>
+                <span class="text-[10px] font-semibold text-[#2e7d32] uppercase tracking-[0.2em] mb-2 block">Order Confirmed</span>
+                <h2 class="text-headline-sm font-semibold text-primary mb-4 italic">Thank You — Your Order is Confirmed</h2>
 
                 <div class="bg-accent-bronze/10 border border-accent-bronze/20 p-4 rounded text-left mb-6 text-xs text-primary leading-relaxed font-light flex items-start gap-3">
-                    <span class="material-symbols-outlined text-accent-bronze text-[18px] flex-shrink-0 mt-0.5">info</span>
+                    <span class="material-symbols-outlined text-accent-bronze text-[18px] flex-shrink-0 mt-0.5">local_shipping</span>
                     <div>
-                        <strong class="font-semibold text-accent-bronze uppercase tracking-wider block mb-1">Action Needed</strong>
-                        Your order is saved. Please send the pre-filled message on WhatsApp to confirm and we'll dispatch within 24 hours.
+                        <strong class="font-semibold text-accent-bronze uppercase tracking-wider block mb-1">${isCod ? "Cash on Delivery" : "Payment Pending"}</strong>
+                        ${isCod
+                            ? `Your order is saved and will be dispatched within 24 hours. Please keep <strong>${curr(t.total)}</strong> ready for the courier.`
+                            : `Your order is saved. We'll confirm payment shortly.`}
                     </div>
                 </div>`;
 
-            const actionsHtml = isRazorpayPaid ? `
+            const actionsHtml = `
                 <div class="flex flex-col sm:flex-row gap-4 w-full justify-center">
                     <a href="track-order.html?order=${encodeURIComponent(order.orderId)}" class="flex-grow inline-flex justify-center items-center gap-2 px-6 py-4 bg-primary text-white text-label-sm font-semibold uppercase tracking-widest hover:bg-[#222] transition-colors rounded-sm shadow-md">
-                        <span class="material-symbols-outlined text-[18px]">local_shipping</span> Track this Order
-                    </a>
-                    <a href="/" class="flex-grow inline-flex justify-center items-center px-6 py-4 bg-transparent border border-border-muted text-text-secondary text-label-sm font-semibold uppercase tracking-widest hover:bg-surface-container transition-all rounded-sm">
-                        Continue Shopping
-                    </a>
-                </div>` : `
-                <div class="flex flex-col sm:flex-row gap-4 w-full justify-center">
-                    <button onclick="openWhatsAppAgain()" class="flex-grow inline-flex justify-center items-center gap-2 px-6 py-4 bg-primary text-white text-label-sm font-semibold uppercase tracking-widest hover:bg-[#222] transition-colors rounded-sm shadow-md">
-                        <span class="material-symbols-outlined text-[18px]">chat</span> Open WhatsApp Again
-                    </button>
-                    <a href="track-order.html?order=${encodeURIComponent(order.orderId)}" class="flex-grow inline-flex justify-center items-center gap-2 px-6 py-4 bg-transparent border border-primary text-primary text-label-sm font-semibold uppercase tracking-widest hover:bg-primary hover:text-white transition-all rounded-sm">
                         <span class="material-symbols-outlined text-[18px]">local_shipping</span> Track this Order
                     </a>
                     <a href="/" class="flex-grow inline-flex justify-center items-center px-6 py-4 bg-transparent border border-border-muted text-text-secondary text-label-sm font-semibold uppercase tracking-widest hover:bg-surface-container transition-all rounded-sm">
@@ -333,7 +349,7 @@
                 <div class="w-full text-left text-xs mb-6 text-text-secondary border border-border-muted/50 p-4 rounded bg-surface/30">
                     <div class="flex justify-between border-b border-border-muted/30 pb-2 mb-2 font-semibold">
                         <span>Order ID: <strong class="text-primary font-bold">${order.orderId}</strong></span>
-                        <span class="${isRazorpayPaid ? "text-[#2e7d32]" : "text-accent-bronze"} uppercase font-bold">${isRazorpayPaid ? "Confirmed" : humanOrderStatus(order.status)}</span>
+                        <span class="${isPaid ? "text-[#2e7d32]" : "text-accent-bronze"} uppercase font-bold">${humanOrderStatus(order.status)}</span>
                     </div>
                     <div class="space-y-1">
                         <p><strong>Customer:</strong> ${c.name || "—"}</p>
@@ -362,7 +378,7 @@
 
                 ${actionsHtml}
                 ${trackingNoteHtml(order)}
-                ${accountNoteHtml(order)}
+                <div id="account-cta-slot"></div>
                 <!-- Order support CTA (Upgrade 10) -->
                 <div class="mt-6 pt-5 border-t border-border-muted/40 text-center">
                     <p class="text-xs text-text-secondary font-light mb-3">Need help with this order? Contact support with your order ID.</p>
@@ -378,6 +394,8 @@
                     <a href="../legal/privacy-policy.html" class="hover:text-accent-bronze transition-colors underline">Privacy Policy</a>
                 </div>
             `;
+
+            renderAccountCta(order);
         });
 
         // Upgrade 10: order-aware support message (WhatsApp, with email fallback).
@@ -421,45 +439,70 @@
                 'Tracking details will be updated after dispatch.</p>';
         }
 
-        // Upgrade 3: account-aware note under the order summary.
-        function accountNoteHtml(order) {
-            var loggedIn = !!(window.CustomerService && window.CustomerService.isCustomerLoggedIn());
-            if (order && order.customerId) {
-                return '<p class="text-[11px] text-text-secondary/80 font-light mt-6 flex items-center justify-center gap-1">' +
+        /* ── "Create your account to track this order" (Phase 2) ─────────────
+           Rendered after the order loads, once we know whether this person is
+           already signed in. The name/email/phone they typed at checkout are
+           carried over to the register page, so nothing is re-typed.
+           Skipping is a first-class option — the order is already saved and
+           trackable without an account. */
+        async function renderAccountCta(order) {
+            const slot = document.getElementById("account-cta-slot");
+            if (!slot || !window.NafumeAPI) return;
+
+            const me = await window.NafumeAPI.me();
+            if (me.ok && me.data.authenticated) {
+                slot.innerHTML =
+                    '<p class="text-[11px] text-text-secondary/80 font-light mt-6 flex items-center justify-center gap-1">' +
                     '<span class="material-symbols-outlined text-[14px] text-accent-bronze">check_circle</span>' +
-                    'This order has been saved to your NAFUME account.</p>';
+                    'This order is saved to your NAFUME account.</p>';
+                return;
             }
-            if (!loggedIn) {
-                return '<div class="mt-6 pt-5 border-t border-border-muted/40 text-center">' +
-                    '<p class="text-xs text-text-secondary font-light mb-3">Create an account to save this order and track future purchases.</p>' +
-                    '<a href="../account/account.html" class="inline-block text-[11px] font-semibold uppercase tracking-widest text-accent-bronze border-b border-accent-bronze hover:text-primary hover:border-primary pb-0.5">Create / Login to Account</a>' +
-                    '</div>';
+
+            const prefill = window.NafumeAPI.recallAccountPrefill() || {
+                name:  (order.customer && order.customer.name)  || "",
+                email: (order.customer && order.customer.email) || "",
+                phone: (order.customer && order.customer.phone) || "",
+                orderId: order.orderId
+            };
+            window.NafumeAPI.rememberAccountPrefill(prefill);
+
+            slot.innerHTML =
+                '<div class="nf-account-cta">' +
+                    '<p class="nf-account-cta-title">Create your account to track this order</p>' +
+                    '<p class="nf-account-cta-sub">' +
+                        'We\'ll use the details you just entered' +
+                        (prefill.email ? ' (' + escapeHtmlText(prefill.email) + ')' : '') +
+                        ' — just pick a password. Future orders attach to the same account automatically.' +
+                    '</p>' +
+                    '<div class="nf-account-cta-row">' +
+                        '<a class="nf-account-cta-btn" href="../account/register.html?from=order&orderId=' +
+                            encodeURIComponent(order.orderId) + '">Create my account</a>' +
+                        '<button type="button" class="nf-account-cta-skip" id="account-cta-skip">Maybe later</button>' +
+                    '</div>' +
+                '</div>';
+
+            const skip = document.getElementById("account-cta-skip");
+            if (skip) {
+                skip.addEventListener("click", function () {
+                    window.NafumeAPI.clearAccountPrefill();
+                    slot.innerHTML =
+                        '<p class="text-[11px] text-text-secondary/80 font-light mt-6 text-center">' +
+                        'No problem — your order is saved and you can track it any time with your order ID.</p>';
+                });
             }
-            return "";
+        }
+
+        function escapeHtmlText(s) {
+            return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+                return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c];
+            });
         }
 
         function waNumber() {
             return (window.COMMERCE_CONFIG && window.COMMERCE_CONFIG.whatsappNumber) || "918595862227";
         }
-        function openWhatsAppAgain() {
-            const msg = (currentActiveOrder && currentActiveOrder.whatsappMessage)
-                ? currentActiveOrder.whatsappMessage
-                : "Hello NAFUME, I'd like to confirm my recent order.";
-            window.open("https://wa.me/" + waNumber() + "?text=" + encodeURIComponent(msg), "_blank");
-        }
         function contactSupport() {
             const msg = "Hello NAFUME, I need help with my order.";
-            window.open("https://wa.me/" + waNumber() + "?text=" + encodeURIComponent(msg), "_blank");
-        }
-        // Guaranteed manual fallback for the auto-open attempted right after
-        // Razorpay verification (browsers often block that one since it fires
-        // from an async callback, not a direct click). This click IS a direct
-        // user gesture, so it always works. Reuses the exact same message via
-        // window.buildRazorpayOrderMessage(), defined in js/launch.js below.
-        function notifyNafumeOnWhatsApp() {
-            const msg = (window.buildRazorpayOrderMessage && currentActiveOrder)
-                ? window.buildRazorpayOrderMessage(currentActiveOrder)
-                : "Hello NAFUME, confirming my paid order. Order ID: " + (currentActiveOrder ? currentActiveOrder.orderId : "—");
             window.open("https://wa.me/" + waNumber() + "?text=" + encodeURIComponent(msg), "_blank");
         }
     </script>

@@ -10,5 +10,30 @@
   "rewrites": [
     { "source": "/pages/guides",             "destination": "/pages/guides/index.html" },
     { "source": "/pages/:section/:page",     "destination": "/pages/:section/:page.html" }
+  ],
+  "crons": [
+    { "path": "/api/jobs/maintenance", "schedule": "0 4 * * *" }
+  ],
+  "functions": {
+    "api/**/*.js": { "maxDuration": 60 }
+  },
+  "headers": [
+    {
+      "source": "/api/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store" },
+        { "key": "X-Content-Type-Options", "value": "nosniff" }
+      ]
+    },
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "X-Content-Type-Options", "value": "nosniff" },
+        { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" },
+        { "key": "X-Frame-Options", "value": "SAMEORIGIN" },
+        { "key": "Permissions-Policy", "value": "geolocation=(), microphone=(), camera=()" },
+        { "key": "Strict-Transport-Security", "value": "max-age=31536000; includeSubDomains" }
+      ]
+    }
   ]
 }

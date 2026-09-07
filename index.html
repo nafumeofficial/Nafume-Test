@@ -36,8 +36,12 @@
     {"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Are NAFUME fragrances long-lasting?","acceptedAnswer":{"@type":"Answer","text":"Yes. NAFUME perfumes are highly concentrated, long-lasting blends with a smooth dry-down, designed to perform well in Indian weather."}},{"@type":"Question","name":"Which NAFUME perfume should I choose?","acceptedAnswer":{"@type":"Answer","text":"Choose based on your personality and occasion. Seduction is floral and musky, Dark Oud is bold and woody, Red Spirit is spicy and aromatic, Aqua Manthan is fresh and aquatic, and All Day is sweet, modern and versatile."}},{"@type":"Question","name":"Are NAFUME perfumes suitable for Indian weather?","acceptedAnswer":{"@type":"Answer","text":"Yes. NAFUME fragrances are created with Indian heat and humidity in mind, so they feel wearable, balanced, and present through the day."}},{"@type":"Question","name":"How do I order from NAFUME?","acceptedAnswer":{"@type":"Answer","text":"Select your fragrance, add it to cart, fill your shipping details, and confirm your order directly on WhatsApp."}},{"@type":"Question","name":"Which NAFUME perfume is best for daily use?","acceptedAnswer":{"@type":"Answer","text":"Aqua Manthan is a fresh, clean choice for everyday and office wear. All Day is a warmer, versatile everyday option."}},{"@type":"Question","name":"Do you offer discovery sets or samples?","acceptedAnswer":{"@type":"Answer","text":"You can build a custom box with up to three fragrances and confirm it on WhatsApp. Visit our build-your-own box page for details."}},{"@type":"Question","name":"How can I track my order?","acceptedAnswer":{"@type":"Answer","text":"Use the Track Order page and enter your order ID, phone number or AWB number. Courier tracking appears once your parcel is dispatched."}}]}
     </script>
     <script id="tailwind-config">
-        tailwind.config = {
-            darkMode: "class",
+        /* The Tailwind CDN is a third party. If it fails to load, 	ailwind is
+       undefined and this block used to throw an uncaught ReferenceError into
+       the console on every page. Guarded so a CDN outage degrades the styling
+       instead of raising a runtime error. */
+    if (typeof tailwind !== "undefined") {
+    tailwind.config = {            darkMode: "class",
             theme: {
                 extend: {
                     colors: {
@@ -70,6 +74,7 @@
                 }
             }
         }
+    }
     </script>
 </head>
 <body class="antialiased min-h-screen flex flex-col selection:bg-accent-bronze selection:text-white relative bg-surface text-primary">
@@ -114,7 +119,7 @@
 
     <!-- 2. ANNOUNCEMENT BAR -->
     <div class="nf-ann">
-      <div class="nf-ann-track">SUMMER SALE &nbsp;•&nbsp; ₹799 EACH &nbsp;•&nbsp; FREE SHIPPING ABOVE ₹999 &nbsp;•&nbsp; ORDERS CONFIRMED ON WHATSAPP &nbsp;•&nbsp; FOLLOW NAFUME ON INSTAGRAM &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;SUMMER SALE &nbsp;•&nbsp; ₹799 EACH &nbsp;•&nbsp; FREE SHIPPING ABOVE ₹999 &nbsp;•&nbsp; ORDERS CONFIRMED ON WHATSAPP &nbsp;•&nbsp; FOLLOW NAFUME ON INSTAGRAM &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</div>
+      <div class="nf-ann-track">SUMMER SALE &nbsp;•&nbsp; ₹799 EACH &nbsp;•&nbsp; FREE SHIPPING ABOVE ₹999 &nbsp;•&nbsp; SECURE ONLINE PAYMENT &amp; COD &nbsp;•&nbsp; FOLLOW NAFUME ON INSTAGRAM &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;SUMMER SALE &nbsp;•&nbsp; ₹799 EACH &nbsp;•&nbsp; FREE SHIPPING ABOVE ₹999 &nbsp;•&nbsp; SECURE ONLINE PAYMENT &amp; COD &nbsp;•&nbsp; FOLLOW NAFUME ON INSTAGRAM &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</div>
     </div>
 
     <!-- 3. HEADER (logo row + nav row) -->
@@ -237,27 +242,29 @@
                 </a>
             </div>
 
+            <!-- Slides 2-5 previously pointed at banner-2…banner-5.jpg, none of
+                 which exist in assets/images/banners/ — four of the five hero
+                 slides were rendering as broken images. Repointed at the real
+                 files, which are named per product.
+                 Red Spirit has no banner asset, so its slide is not shown
+                 rather than inventing or mislabelling an image; add
+                 banner-red-spirit.jpg and restore the slide + a fifth dot when
+                 the artwork exists. -->
             <div class="hero-slide">
                 <a href="pages/products/dark-oud.html" class="hero-slide-link" aria-label="Shop Dark Oud — Woody Oud premium perfume">
-                    <img src="assets/images/banners/banner-2.jpg" alt="NAFUME Dark Oud premium perfume — Woody Oud long-lasting fragrance" loading="lazy" decoding="async" width="2434" height="887"/>
-                </a>
-            </div>
-
-            <div class="hero-slide">
-                <a href="pages/products/red-spirit.html" class="hero-slide-link" aria-label="Shop Red Spirit — Spicy Aromatic premium perfume">
-                    <img src="assets/images/banners/banner-3.jpg" alt="NAFUME Red Spirit premium perfume — Spicy Aromatic long-lasting fragrance" loading="lazy" decoding="async" width="2434" height="887"/>
+                    <img src="assets/images/banners/banner-dark-oud.jpg" alt="NAFUME Dark Oud premium perfume — Woody Oud long-lasting fragrance" loading="lazy" decoding="async"/>
                 </a>
             </div>
 
             <div class="hero-slide">
                 <a href="pages/products/aqua-manthan.html" class="hero-slide-link" aria-label="Shop Aqua Manthan — Fresh Aquatic premium perfume">
-                    <img src="assets/images/banners/banner-4.jpg" alt="NAFUME Aqua Manthan premium perfume — Fresh Aquatic long-lasting fragrance" loading="lazy" decoding="async" width="2434" height="887"/>
+                    <img src="assets/images/banners/banner-aqua.webp" alt="NAFUME Aqua Manthan premium perfume — Fresh Aquatic long-lasting fragrance" loading="lazy" decoding="async"/>
                 </a>
             </div>
 
             <div class="hero-slide">
                 <a href="pages/products/all-day-misfit.html" class="hero-slide-link" aria-label="Shop All Day — Gourmand Woody premium perfume">
-                    <img src="assets/images/banners/banner-5.jpg" alt="NAFUME All Day premium perfume — Gourmand Woody long-lasting fragrance" loading="lazy" decoding="async" width="2434" height="887"/>
+                    <img src="assets/images/banners/banner-all-day.jpg" alt="NAFUME All Day premium perfume — Gourmand Woody long-lasting fragrance" loading="lazy" decoding="async"/>
                 </a>
             </div>
 
@@ -266,7 +273,6 @@
                 <button class="hero-dot" data-slide="1" aria-label="Slide 2"></button>
                 <button class="hero-dot" data-slide="2" aria-label="Slide 3"></button>
                 <button class="hero-dot" data-slide="3" aria-label="Slide 4"></button>
-                <button class="hero-dot" data-slide="4" aria-label="Slide 5"></button>
             </div>
         </section>
 
@@ -282,8 +288,9 @@
                     <div class="watch-buy-carousel" id="watchCarousel">
 
                         <div class="watch-video-card">
-                            <video class="watch-video" src="assets/videos/video-seduction%20(2).mp4"
-                                muted playsinline loop autoplay preload="metadata"
+                            <video class="watch-video" poster="assets/images/video-posters/seduction-2.jpg"
+                                data-video-src="assets/videos/video-seduction%20(2).mp4"
+                                muted playsinline loop preload="none"
                                 aria-label="Seduction fragrance video"></video>
                             <div class="watch-product-mini">
                                 <img class="watch-product-mini-thumb" src="assets/images/products/thumbnails/Seduction/image-1.jpg" alt="NAFUME Seduction perfume" loading="lazy" decoding="async" width="1254" height="1254"/>
@@ -299,8 +306,9 @@
                         </div>
 
                         <div class="watch-video-card">
-                            <video class="watch-video" src="assets/videos/video-DARK%20OUD.mp4"
-                                muted playsinline loop autoplay preload="metadata"
+                            <video class="watch-video" poster="assets/images/video-posters/dark-oud.jpg"
+                                data-video-src="assets/videos/video-DARK%20OUD.mp4"
+                                muted playsinline loop preload="none"
                                 aria-label="Dark Oud fragrance video"></video>
                             <div class="watch-product-mini">
                                 <img class="watch-product-mini-thumb" src="assets/images/products/thumbnails/Dark%20Oud/image-1.jpg" alt="NAFUME Dark Oud perfume" loading="lazy" decoding="async" width="1254" height="1254"/>
@@ -316,8 +324,9 @@
                         </div>
 
                         <div class="watch-video-card">
-                            <video class="watch-video" src="assets/videos/video-red-spirit.mp4"
-                                muted playsinline loop autoplay preload="metadata"
+                            <video class="watch-video" poster="assets/images/video-posters/red-spirit.jpg"
+                                data-video-src="assets/videos/video-red-spirit.mp4"
+                                muted playsinline loop preload="none"
                                 aria-label="Red Spirit fragrance video"></video>
                             <div class="watch-product-mini">
                                 <img class="watch-product-mini-thumb" src="assets/images/products/thumbnails/Red%20Spirit/image-1.jpg" alt="NAFUME Red Spirit perfume" loading="lazy" decoding="async" width="1254" height="1254"/>
@@ -333,8 +342,9 @@
                         </div>
 
                         <div class="watch-video-card">
-                            <video class="watch-video" src="assets/videos/video-ALL%20DAY.mp4"
-                                muted playsinline loop autoplay preload="metadata"
+                            <video class="watch-video" poster="assets/images/video-posters/all-day.jpg"
+                                data-video-src="assets/videos/video-ALL%20DAY.mp4"
+                                muted playsinline loop preload="none"
                                 aria-label="All Day fragrance video"></video>
                             <div class="watch-product-mini">
                                 <img class="watch-product-mini-thumb" src="assets/images/products/thumbnails/All%20Day%20Misfit/image-1.jpg" alt="NAFUME All Day perfume" loading="lazy" decoding="async" width="1254" height="1254"/>
@@ -350,8 +360,9 @@
                         </div>
 
                         <div class="watch-video-card">
-                            <video class="watch-video" src="assets/videos/video-AQUA%20MANTHAN.mp4"
-                                muted playsinline loop autoplay preload="metadata"
+                            <video class="watch-video" poster="assets/images/video-posters/aqua-manthan.jpg"
+                                data-video-src="assets/videos/video-AQUA%20MANTHAN.mp4"
+                                muted playsinline loop preload="none"
                                 aria-label="Aqua Manthan fragrance video"></video>
                             <div class="watch-product-mini">
                                 <img class="watch-product-mini-thumb" src="assets/images/products/thumbnails/Aqua%20Manthan/image-1.jpg" alt="NAFUME Aqua Manthan perfume" loading="lazy" decoding="async" width="1254" height="1254"/>
@@ -367,8 +378,9 @@
                         </div>
 
                         <div class="watch-video-card">
-                            <video class="watch-video" src="assets/videos/video-seduction.mp4"
-                                muted playsinline loop autoplay preload="metadata"
+                            <video class="watch-video" poster="assets/images/video-posters/seduction.jpg"
+                                data-video-src="assets/videos/video-seduction.mp4"
+                                muted playsinline loop preload="none"
                                 aria-label="Seduction fragrance video"></video>
                             <div class="watch-product-mini">
                                 <img class="watch-product-mini-thumb" src="assets/images/products/thumbnails/Seduction/image-1.jpg" alt="NAFUME Seduction perfume" loading="lazy" decoding="async" width="1254" height="1254"/>
@@ -834,6 +846,26 @@
         </section>
 
         <!-- ═══════════════════════════════════════════════════════════
+             FRAGRANCE FINDER — entry point, sits directly under Shop by
+             Mood because it answers the same question ("which one is
+             for me?") for shoppers who don't already know their mood.
+        ════════════════════════════════════════════════════════════ -->
+        <section class="nf-quiz-teaser" id="fragrance-finder" aria-label="Fragrance finder quiz">
+          <div class="nf-quiz-teaser-inner">
+            <p class="nf-quiz-teaser-eyebrow">Not sure where to start?</p>
+            <h2 class="nf-quiz-teaser-title">Find your fragrance in 5 questions</h2>
+            <p class="nf-quiz-teaser-sub">
+              Tell us your mood, your occasion and how much presence you like — we'll
+              match you with the NAFUME scent that fits. No account needed.
+            </p>
+            <a class="nf-quiz-teaser-cta" href="/fragrance-finder.html">
+              <span class="material-symbols-outlined" style="font-size:18px;">auto_awesome</span>
+              Take the fragrance quiz
+            </a>
+          </div>
+        </section>
+
+        <!-- ═══════════════════════════════════════════════════════════
              WHY NAFUME
         ════════════════════════════════════════════════════════════ -->
         <section class="why-nafume-section" id="why-nafume" aria-label="Why choose NAFUME perfumes">
@@ -1244,12 +1276,18 @@
     <script src="js/state.js"></script>
     <script src="js/app.js"></script>
     <script src="js/commerce/config.js"></script>
+    <script src="js/commerce/api-client.js"></script>
     <script src="js/commerce/customer-service.js"></script>
     <script src="js/commerce/review-service.js"></script>
     <script src="js/commerce/seo-service.js"></script>
     <script src="js/commerce/offer-service.js"></script>
     <script src="js/launch.js"></script>
     <script src="js/commerce/operations-service.js"></script>
+    <!-- Email capture popup — exit-intent on desktop, 50% scroll everywhere.
+         Suppresses itself on checkout/account pages and for returning
+         customers; see js/commerce/lead-popup.js. Loaded last so it never
+         delays anything the page needs to render. -->
+    <script src="js/commerce/lead-popup.js" defer></script>
     <!-- Structured data (Upgrade 8): Organization + Website + homepage FAQ -->
     <script>
         document.addEventListener("DOMContentLoaded", function () {
@@ -1343,18 +1381,43 @@
                 new ResizeObserver(updateCentering).observe(carousel);
             }
 
-            // Pause videos outside viewport (IntersectionObserver)
+            // Lazy-load + play videos only once their card is actually visible
+            // within the carousel's own scroll strip (root: carousel — NOT the
+            // page viewport, since cards scrolled off to the side would still
+            // count as "in the page viewport" otherwise). Nothing downloads
+            // until a card scrolls into view; leaving view pauses (but does
+            // not discard) the video so scrolling back doesn't reload it.
             var videos = carousel.querySelectorAll('video');
+            var visibleVideos = new Set();
+
+            function ensureLoaded(video) {
+                if (!video.src && video.dataset.videoSrc) {
+                    video.src = video.dataset.videoSrc;
+                    video.load();
+                }
+            }
+
+            // Exposed so the modal can resume exactly the videos still
+            // genuinely visible when it closes, instead of blindly playing
+            // all six regardless of whether they're loaded or on-screen.
+            window.watchCarouselResumeVisible = function () {
+                visibleVideos.forEach(function (v) { v.play().catch(function () {}); });
+            };
+
             if ('IntersectionObserver' in window) {
                 var obs = new IntersectionObserver(function (entries) {
                     entries.forEach(function (e) {
+                        var v = e.target;
                         if (e.isIntersecting) {
-                            e.target.play().catch(function(){});
+                            visibleVideos.add(v);
+                            ensureLoaded(v);
+                            v.play().catch(function () {});
                         } else {
-                            e.target.pause();
+                            visibleVideos.delete(v);
+                            v.pause();
                         }
                     });
-                }, { threshold: 0.3 });
+                }, { root: carousel, threshold: 0.3 });
                 videos.forEach(function (v) { obs.observe(v); });
             }
         })();
@@ -1362,12 +1425,12 @@
         // ── Watch & Buy Modal ────────────────────────────────
         document.addEventListener('DOMContentLoaded', function () {
             var WB_DATA = [
-                { src: 'assets/videos/video-seduction%20(2).mp4', id: 'seduction',      name: 'Seduction',    slug: 'pages/products/seduction.html',    thumb: 'assets/images/products/thumbnails/Seduction/image-1.jpg' },
-                { src: 'assets/videos/video-DARK%20OUD.mp4',     id: 'dark-oud',       name: 'Dark Oud',     slug: 'pages/products/dark-oud.html',      thumb: 'assets/images/products/thumbnails/Dark%20Oud/image-1.jpg' },
-                { src: 'assets/videos/video-red-spirit.mp4',     id: 'red-spirit',     name: 'Red Spirit',   slug: 'pages/products/red-spirit.html',    thumb: 'assets/images/products/thumbnails/Red%20Spirit/image-1.jpg' },
-                { src: 'assets/videos/video-ALL%20DAY.mp4',      id: 'all-day-misfit', name: 'All Day',      slug: 'pages/products/all-day-misfit.html', thumb: 'assets/images/products/thumbnails/All%20Day%20Misfit/image-1.jpg' },
-                { src: 'assets/videos/video-AQUA%20MANTHAN.mp4', id: 'aqua-manthan',   name: 'Aqua Manthan', slug: 'pages/products/aqua-manthan.html',  thumb: 'assets/images/products/thumbnails/Aqua%20Manthan/image-1.jpg' },
-                { src: 'assets/videos/video-seduction.mp4',      id: 'seduction',      name: 'Seduction',    slug: 'pages/products/seduction.html',    thumb: 'assets/images/products/thumbnails/Seduction/image-1.jpg' }
+                { src: 'assets/videos/video-seduction%20(2).mp4', poster: 'assets/images/video-posters/seduction-2.jpg',  id: 'seduction',      name: 'Seduction',    slug: 'pages/products/seduction.html',    thumb: 'assets/images/products/thumbnails/Seduction/image-1.jpg' },
+                { src: 'assets/videos/video-DARK%20OUD.mp4',     poster: 'assets/images/video-posters/dark-oud.jpg',      id: 'dark-oud',       name: 'Dark Oud',     slug: 'pages/products/dark-oud.html',      thumb: 'assets/images/products/thumbnails/Dark%20Oud/image-1.jpg' },
+                { src: 'assets/videos/video-red-spirit.mp4',     poster: 'assets/images/video-posters/red-spirit.jpg',    id: 'red-spirit',     name: 'Red Spirit',   slug: 'pages/products/red-spirit.html',    thumb: 'assets/images/products/thumbnails/Red%20Spirit/image-1.jpg' },
+                { src: 'assets/videos/video-ALL%20DAY.mp4',      poster: 'assets/images/video-posters/all-day.jpg',       id: 'all-day-misfit', name: 'All Day',      slug: 'pages/products/all-day-misfit.html', thumb: 'assets/images/products/thumbnails/All%20Day%20Misfit/image-1.jpg' },
+                { src: 'assets/videos/video-AQUA%20MANTHAN.mp4', poster: 'assets/images/video-posters/aqua-manthan.jpg',  id: 'aqua-manthan',   name: 'Aqua Manthan', slug: 'pages/products/aqua-manthan.html',  thumb: 'assets/images/products/thumbnails/Aqua%20Manthan/image-1.jpg' },
+                { src: 'assets/videos/video-seduction.mp4',      poster: 'assets/images/video-posters/seduction.jpg',     id: 'seduction',      name: 'Seduction',    slug: 'pages/products/seduction.html',    thumb: 'assets/images/products/thumbnails/Seduction/image-1.jpg' }
             ];
 
             var modal     = document.getElementById('wb-modal');
@@ -1399,6 +1462,7 @@
                 videoEl.muted = true;
                 isMuted = true;
                 updateMuteIcon();
+                videoEl.poster = d.poster;
                 videoEl.src = d.src;
                 videoEl.load();
                 videoEl.play().catch(function () {});
@@ -1422,8 +1486,14 @@
                 modal.setAttribute('hidden', '');
                 document.body.style.overflow = '';
                 videoEl.pause();
-                videoEl.src = '';
-                document.querySelectorAll('#watchCarousel .watch-video').forEach(function (v) { v.play().catch(function () {}); });
+                videoEl.removeAttribute('src');
+                videoEl.load(); // fully abort any in-flight video download, not just stop playback
+                // Resume only the carousel videos that are actually still
+                // visible (and therefore already lazy-loaded) — never forces
+                // a fresh download of cards that haven't scrolled into view.
+                if (typeof window.watchCarouselResumeVisible === 'function') {
+                    window.watchCarouselResumeVisible();
+                }
             }
 
             function navigate(dir) {
@@ -1497,7 +1567,10 @@
                 </button>
                 <div class="wb-product-bar">
                     <a class="wb-product-link" id="wb-product-link" href="#">
-                        <img class="wb-prod-thumb" id="wb-prod-thumb" src="" alt="" loading="lazy"/>
+                        <!-- src is set by the Watch & Buy script when a video opens.
+                             Left off entirely rather than src="" — an empty src makes
+                             the browser re-request the page URL as an image. -->
+                        <img class="wb-prod-thumb" id="wb-prod-thumb" alt="" loading="lazy"/>
                         <div class="wb-prod-info">
                             <span class="wb-prod-name" id="wb-prod-name"></span>
                             <div class="wb-price-row">

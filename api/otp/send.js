@@ -23,6 +23,8 @@
  */
 "use strict";
 
+const http = require("../_lib/http");
+
 const AUTH_KEY    = process.env.MSG91_AUTH_KEY;
 const TEMPLATE_ID = process.env.MSG91_TEMPLATE_ID;
 const SENDER_ID   = process.env.MSG91_SENDER_ID   || "NAFUME";
@@ -52,6 +54,20 @@ module.exports = async function handler(req, res) {
       message: "Please enter a valid 10-digit Indian mobile number."
     });
   }
+
+  /* Durable per-NUMBER throttle. This is the one that matters: each OTP costs
+     real money and lands on a real person's phone, so an attacker rotating IPs
+     must still not be able to pump SMS at one number. Enforced in the database
+     so every serverless instance shares the count. */
+  const limitOk = await http.durableLimit(req, res, {
+    key: "otp-send-number", scope: digits, limit: 5, windowMs: 15 * 60 * 1000
+  });
+  if (!limitOk) return;
+
+  const ipOk = await http.durableLimit(req, res, {
+    key: "otp-send-ip", limit: 20, windowMs: 15 * 60 * 1000
+  });
+  if (!ipOk) return;
 
   const mobile = "91" + digits;
 
