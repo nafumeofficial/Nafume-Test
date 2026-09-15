@@ -97,7 +97,7 @@ async function createSession(customerId, method) {
     id:          db.newId(),
     customer_id: customerId,
     token_hash:  hashToken(token),
-    method:      method === "otp" ? "otp" : "password",
+    method:      ["otp", "email_code", "phone_code"].indexOf(method) !== -1 ? method : "password",
     created_at:  db.nowISO(),
     expires_at:  expiresAt,
     revoked_at:  null
@@ -214,6 +214,28 @@ function isSameOrigin(req) {
   }
 }
 
+/* ── bearer tokens for staff + scheduled jobs ────────────────────────────────
+   bearerMatches(req, ["ADMIN_API_TOKEN", "CRON_SECRET"]) -> true when the
+   Authorization header is "Bearer <value>" for one of the named variables.
+   Constant-time per candidate; unset variables never match.                */
+function bearerMatches(req, envNames) {
+  const header = String((req.headers && req.headers.authorization) || "");
+  const given  = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
+  if (!given) return false;
+  const a = crypto.createHash("sha256").update(given).digest();
+  let matched = false;
+  (envNames || []).forEach(function (name) {
+    const expected = String(process.env[name] || "").trim();
+    if (!expected) return;
+    const b = crypto.createHash("sha256").update(expected).digest();
+    if (crypto.timingSafeEqual(a, b)) matched = true;
+  });
+  return matched;
+}
+function anyConfigured(envNames) {
+  return (envNames || []).some(function (n) { return String(process.env[n] || "").trim().length > 0; });
+}
+
 /* ── safe customer projection ────────────────────────────────────────────────
    The ONLY shape a customer record may take on its way to the browser. Password
    hashes, internal flags and other people's data can never leak through it.   */
@@ -224,6 +246,8 @@ function publicCustomer(c) {
     name:       c.name || "",
     email:      c.email || "",
     phone:      c.phone || "",
+    emailVerified: !!c.email_verified_at,
+    phoneVerified: !!c.phone_verified_at,
     hasAccount: !!c.has_account,
     address: {
       line1:   c.address_line1 || "",
@@ -241,7 +265,7 @@ module.exports = {
   hashPassword, verifyPassword,
   createSession, revokeSession, revokeAllSessions,
   setSessionCookie, clearSessionCookie, readSessionToken, parseCookies,
-  getSession, isSameOrigin, publicCustomer,
+  getSession, isSameOrigin, publicCustomer, bearerMatches, anyConfigured,
   hashToken, newToken,
   SESSION_COOKIE, SESSION_MAX_AGE
 };

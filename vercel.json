@@ -2,6 +2,12 @@
   "cleanUrls": true,
   "trailingSlash": false,
   "redirects": [
+    { "source": "/server/:path*",            "destination": "/404",          "permanent": false },
+    { "source": "/api/index.js",             "destination": "/404",          "permanent": false },
+    { "source": "/db/:path*",                "destination": "/404",          "permanent": false },
+    { "source": "/test/:path*",              "destination": "/404",          "permanent": false },
+    { "source": "/docs/:path*",              "destination": "/404",          "permanent": false },
+    { "source": "/:file(.+\\.(?:md|sql))",   "destination": "/404",          "permanent": false },
     { "source": "/index.html",               "destination": "/",             "permanent": true },
     { "source": "/pages/guides/index.html",  "destination": "/pages/guides", "permanent": true },
     { "source": "/pages/guides/index",       "destination": "/pages/guides", "permanent": true },

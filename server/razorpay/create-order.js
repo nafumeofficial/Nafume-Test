@@ -1,4 +1,4 @@
-﻿/*
+/*
  * POST /api/razorpay/create-order  —  create a Razorpay order + persist the customer
  * ============================================================================
  * Runs server-side only. RAZORPAY_KEY_SECRET is NEVER exposed to the browser —
@@ -30,16 +30,18 @@ const catalog   = require("../_lib/catalog");
 const repo      = require("../_lib/repo");
 const discounts = require("../_lib/discounts");
 const auth      = require("../_lib/auth");
+const checkout  = require("../_lib/checkout");
 
-const KEY_ID     = process.env.RAZORPAY_KEY_ID;
-const KEY_SECRET = process.env.RAZORPAY_KEY_SECRET;
+/* Read per request so a changed environment is honoured without a cold start. */
+function keyId()     { return process.env.RAZORPAY_KEY_ID; }
+function keySecret() { return process.env.RAZORPAY_KEY_SECRET; }
 
 const RAZORPAY_TIMEOUT_MS = 10000;
 
 async function createRazorpayOrder(amountPaise, receipt, notes) {
   const ctrl  = new AbortController();
   const timer = setTimeout(function () { ctrl.abort(); }, RAZORPAY_TIMEOUT_MS);
-  const auth  = Buffer.from(KEY_ID + ":" + KEY_SECRET).toString("base64");
+  const auth  = Buffer.from(keyId() + ":" + keySecret()).toString("base64");
 
   try {
     const resp = await fetch("https://api.razorpay.com/v1/orders", {
@@ -73,7 +75,7 @@ module.exports = async function handler(req, res) {
   if (!http.guard(req, res, "POST")) return;
   if (!http.rateLimit(req, res, { key: "create-order", limit: 40, windowMs: 60000 })) return;
 
-  if (!KEY_ID || !KEY_SECRET) {
+  if (!keyId() || !keySecret()) {
     console.error("[razorpay/create-order] RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET missing");
     return http.fail(res, 503, "payments_unavailable",
       "Online payment is not available right now. Please try again shortly or contact us on WhatsApp.");
@@ -98,6 +100,13 @@ module.exports = async function handler(req, res) {
 
   const giftingRequested = body.giftingAddOn === true;
 
+  let session;
+  try {
+    session = await auth.getSession(req);
+  } catch (err) {
+    return http.handleError(res, err, "razorpay/create-order");
+  }
+
   /* ── 2b. promo code — re-validated here from scratch ──────────────────────
      Whatever the browser was shown, eligibility and the rupee amount are
      decided again now, against the database. A code the customer is not
@@ -108,7 +117,6 @@ module.exports = async function handler(req, res) {
   const requestedCode = validate.clean(body.discountCode, 40);
   if (requestedCode) {
     try {
-      const session = await auth.getSession(req);
       discountQuote = await discounts.quote(requestedCode, {
         priced:        priced,
         prepaid:       true,
@@ -157,23 +165,13 @@ module.exports = async function handler(req, res) {
 
   /* ── 4. persist customer + pending order ──────────────────────────────── */
   try {
-    const found = await repo.findOrCreateCustomer({
-      name:            shipping.value.name,
-      email:           shipping.value.email,
-      emailNormalized: shipping.value.emailNormalized,
-      phone:           shipping.value.phone,
-      phoneNormalized: shipping.value.phoneNormalized,
-      line1:           shipping.value.line1,
-      line2:           shipping.value.line2,
-      city:            shipping.value.city,
-      state:           shipping.value.state,
-      pincode:         shipping.value.pincode,
-      source:          "checkout"
-    });
+    const placed = await checkout.checkoutCustomer(session, shipping.value, "checkout");
 
     const created = await repo.createPendingOrder({
       orderId:         orderId,
-      customerId:      found.customer.id,
+      customerId:      placed.customer.id,
+      placedByCustomerId: placed.sessionCustomerId,
+      verifiedOwnerCustomerId: repo.ownerAtCreation(placed.customer, shipping.value, placed.sessionCustomerId),
       razorpayOrderId: rzp.order.id,
       shipping:        shipping.value,
       lines:           priced.lines,
@@ -183,23 +181,32 @@ module.exports = async function handler(req, res) {
       offers:          buildOfferSummary(totals)
     });
 
-    // Record the redemption against the real order. UNIQUE(code, order_id)
-    // makes this idempotent; markRedeemed() promotes it once payment lands.
+    // Claim an allowance slot for the code against the real order. The
+    // partial UNIQUE index on slot_key means a parallel checkout cannot spend
+    // the same reward; the loser's order is cancelled and the customer is told.
     if (discountQuote && discountQuote.ok) {
-      await discounts.recordRedemption({
+      const claim = await discounts.recordRedemption({
         code:            discountQuote.code,
-        customerId:      found.customer.id,
+        customerId:      discountQuote.identity.customerId || placed.customer.id,
         orderId:         orderId,
         orderUuid:       created.id,
         subtotalBefore:  totals.subtotal,
         discountAmount:  totals.promoDiscount,
-        finalAmount:     totals.total
+        finalAmount:     totals.total,
+        allowance:       discountQuote.allowance
       });
+      if (!claim.ok) {
+        await discounts.cancelUnpaidOrder(created.id);
+        return http.fail(res, 409, "discount_unavailable",
+          "That code was just used on another order. Please refresh your cart and try again.");
+      }
     }
 
-    // Consent is recorded either way — an explicit "no" is data too, and it
-    // revokes any earlier opt-in for this customer.
-    await repo.setMarketingConsent(found.customer.id, "whatsapp", whatsappOptIn, "checkout");
+    if (placed.recordConsent) {
+      // Consent is recorded either way — an explicit "no" is data too, and it
+      // revokes any earlier opt-in for this customer.
+      await repo.setMarketingConsent(placed.customer.id, "whatsapp", whatsappOptIn, "checkout");
+    }
 
   } catch (err) {
     // No payment has been taken at this point — failing here is safe. The
@@ -213,7 +220,7 @@ module.exports = async function handler(req, res) {
     order_id:        rzp.order.id,
     amount:          rzp.order.amount,
     currency:        rzp.order.currency,
-    key_id:          KEY_ID,
+    key_id:          keyId(),
     totals: {
       subtotal:        totals.subtotal,
       bundleDiscount:  totals.bundleDiscount,
@@ -264,5 +271,5 @@ function buildOfferSummary(totals) {
   return out;
 }
 
-// Exported for the local test harness (test/api-tests.js).
+// Exported for the local test harness.
 module.exports.buildOfferSummary = buildOfferSummary;

@@ -101,16 +101,16 @@
 
   <script>
   /* ── Post-delivery review form ──────────────────────────────────────────
-     Reached from the review-request email (?orderId=…), from the account page,
-     or by typing an order id.
+     Reached from the review-request email (?orderId=…&token=…) or from the
+     account page (signed in, ?orderId=…).
 
      Eligibility is checked by the server BEFORE the form renders, using exactly
-     the rules the submit endpoint enforces (api/_lib/review-access.js), so the
-     customer is never invited to write a review that will then be rejected.
+     the rules the submit endpoint enforces (server/_lib/review-access.js), so
+     the customer is never invited to write a review that will then be rejected.
 
-     Ownership: a signed-in customer is authorised by their session; a guest
-     supplies the email or phone the order was placed with. That contact detail
-     is remembered from checkout, so the common case asks for nothing.
+     Access: the review-link token from the email, or a signed-in session that
+     owns the order. An order id plus an email/phone is not enough — a review
+     earns a reward. Reviews open once a delivery has been recorded.
 
      Photos are read locally, downscaled, and sent as a data URL — the server
      re-validates the type against the actual bytes before storing anything.
@@ -122,8 +122,15 @@
     var root  = document.getElementById("review-root");
     var params = new URLSearchParams(window.location.search);
     var orderId = (params.get("orderId") || "").trim();
+    var token   = (params.get("token") || "").trim();
 
-    var state = { order: null, products: [], reward: null, photo: null, contact: "" };
+    // Keep the token out of the address bar (and so out of screenshots and
+    // shared links) once it has been read.
+    if (token && window.history && window.history.replaceState) {
+      try { window.history.replaceState(null, "", window.location.pathname + "?orderId=" + encodeURIComponent(orderId)); } catch (e) {}
+    }
+
+    var state = { order: null, products: [], reward: null, photo: null };
 
     function esc(s) {
       return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
@@ -135,37 +142,19 @@
       root.innerHTML = '<div class="nf-review-state ' + (cls || "") + '">' + html + '</div>';
     }
 
-    /* ── step 1: which order? ─────────────────────────────────────────────── */
+    /* ── no access: explain the two ways in ──────────────────────────────── */
 
-    function renderLookupForm(message) {
-      root.innerHTML =
-        '<form class="nf-review-card" id="lookup-form" novalidate>' +
-          (message ? '<p class="nf-auth-status is-error">' + esc(message) + '</p>' : '') +
-          '<div class="nf-review-field">' +
-            '<label class="nf-review-label" for="lk-order">Order ID</label>' +
-            '<input id="lk-order" class="nf-review-input" type="text" placeholder="NF-12345678-123" ' +
-              'value="' + esc(orderId) + '" required/>' +
-          '</div>' +
-          '<div class="nf-review-field">' +
-            '<label class="nf-review-label" for="lk-contact">Email or mobile used for the order</label>' +
-            '<input id="lk-contact" class="nf-review-input" type="text" ' +
-              'placeholder="you@example.com or 9876543210" required/>' +
-          '</div>' +
-          '<button type="submit" class="nf-review-submit" id="lk-submit">Find my order</button>' +
-        '</form>';
-
-      document.getElementById("lookup-form").addEventListener("submit", function (e) {
-        e.preventDefault();
-        var btn = document.getElementById("lk-submit");
-        orderId = document.getElementById("lk-order").value.trim();
-        state.contact = document.getElementById("lk-contact").value.trim();
-        if (!orderId || !state.contact) {
-          renderLookupForm("Please enter both your order ID and the email or mobile you used.");
-          return;
-        }
-        btn.disabled = true; btn.textContent = "Checking…";
-        checkEligibility();
-      });
+    function renderNeedAccess(message) {
+      var back = "/pages/order/review.html" + (orderId ? "?orderId=" + encodeURIComponent(orderId) : "");
+      renderState(
+        (message ? '<p>' + esc(message) + '</p>' : '') +
+        '<p style="margin-top:12px;">To review an order, open the <strong>Write a review</strong> link in the email ' +
+          'we send after delivery, or sign in to the NAFUME account the order belongs to.</p>' +
+        '<p style="margin-top:16px;"><a class="nf-review-submit" style="display:inline-block;text-decoration:none;" ' +
+          'href="/pages/account/account.html?next=' + encodeURIComponent(back) + '">Sign in</a></p>' +
+        '<p class="nf-review-hint" style="margin-top:12px;">New here? Create your account with the email you ordered with ' +
+          'and the order is added automatically.</p>',
+        "is-error");
     }
 
     /* ── step 2: may they review? ─────────────────────────────────────────── */
@@ -174,7 +163,7 @@
       renderState('<span class="nf-quiz-spinner" style="margin:0 auto 14px;"></span>' +
                   '<p>Checking your order…</p>');
 
-      API.reviewEligibility(orderId, state.contact).then(function (res) {
+      API.reviewEligibility(orderId, token).then(function (res) {
         if (res.offline) {
           renderState('<p>' + esc(res.message) + '</p>' +
             '<button class="nf-review-submit" style="margin-top:16px;" onclick="window.location.reload()">Try again</button>',
@@ -182,7 +171,7 @@
           return;
         }
         if (!res.ok) {
-          if (res.status === 404) { renderLookupForm(res.message); return; }
+          if (res.status === 404 || res.status === 400) { renderNeedAccess(res.message); return; }
           renderState('<p>' + esc(res.message || "We couldn't load that order.") + '</p>', "is-error");
           return;
         }
@@ -191,18 +180,16 @@
         state.reward   = res.data.reward;
 
         if (!res.data.eligible) {
+          var notYet = res.data.reason === "not_delivered";
           renderState(
             '<p>' + esc(res.data.message || "There's nothing left to review on this order.") + '</p>' +
+            (notYet
+              ? '<p class="nf-review-hint" style="margin-top:10px;">Reviews open as soon as your delivery is recorded — ' +
+                'we\'ll also email you a link a few days after it arrives.</p>'
+              : '') +
             '<p style="margin-top:14px;"><a href="/pages/collections/shop.html" style="text-decoration:underline;">Browse new launches</a></p>',
-            "is-done");
+            notYet ? "" : "is-done");
           return;
-        }
-
-        if (!res.data.delivered) {
-          // Not blocking — an early review is still a real one — but be honest
-          // that we don't have a delivery confirmation yet.
-          document.getElementById("review-intro").textContent =
-            "We haven't recorded a delivery for this order yet, but you're welcome to review it now.";
         }
 
         renderForm();
@@ -358,7 +345,7 @@
 
       API.submitReview({
         orderId:   orderId,
-        contact:   state.contact,
+        token:     token,
         productId: document.getElementById("rv-product").value,
         rating:    parseInt(rating.value, 10),
         title:     document.getElementById("rv-title").value.trim(),
@@ -386,7 +373,8 @@
           (reward
             ? '<p style="margin-top:16px;">Here\'s ' + esc(reward.label.toLowerCase()) + ':</p>' +
               '<span class="nf-review-reward">' + esc(reward.code) + '</span>' +
-              '<p class="nf-review-hint" style="margin-top:10px;">' + esc(reward.terms) + '</p>'
+              '<p class="nf-review-hint" style="margin-top:10px;">' + esc(reward.terms) + '</p>' +
+              (reward.howToUse ? '<p class="nf-review-hint" style="margin-top:6px;">' + esc(reward.howToUse) + '</p>' : '')
             : '') +
           '<p style="margin-top:20px;"><a href="/pages/collections/shop.html" style="text-decoration:underline;">Shop new launches</a></p>',
           "is-done");
@@ -398,9 +386,8 @@
     if (!API) {
       renderState('<p>The review form could not load. Please refresh the page.</p>', "is-error");
     } else if (!orderId) {
-      renderLookupForm();
+      renderNeedAccess();
     } else {
-      state.contact = API.recallCheckoutContact(orderId) || "";
       checkEligibility();
     }
   })();

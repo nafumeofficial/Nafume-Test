@@ -2842,13 +2842,23 @@ function startRazorpayOrder(values, method) {
     });
 }
 
-/* verifyRazorpayPayment — server-side verification is the only thing that can
-   mark an order paid.
+/* verifyRazorpayPayment — the server decides whether the order is paid; the
+   browser's "payment succeeded" callback is never proof on its own.
 
-   Note on retries: this is safe to call more than once for the same payment.
-   The endpoint is idempotent (UNIQUE razorpay_payment_id + a conditional
-   pending→paid update), so a retry after a flaky network resolves to the same
-   single order rather than a duplicate. */
+   Three outcomes:
+     paid                   → confirmation page
+     awaiting_verification  → Razorpay has not confirmed CAPTURE yet (or could
+                              not be reached). The order is saved and will
+                              update by itself; the customer must not pay
+                              again. We clear the cart and show the order.
+     refused                → signature/amount/order mismatch or a failed
+                              payment. Nothing was marked paid.
+
+   Safe to call more than once for the same payment: the server's paid
+   transition is a single conditional update shared with the webhook. */
+var NF_AWAITING_PAYMENT_MESSAGE =
+  "We're confirming your payment. Please don't pay again. Your order status will update once confirmation arrives.";
+
 function verifyRazorpayPayment(response, nafumeOrderId, values, attempt) {
   attempt = attempt || 1;
 
@@ -2874,6 +2884,33 @@ function verifyRazorpayPayment(response, nafumeOrderId, values, attempt) {
 
     nfCheckoutInFlight = false;
 
+    /* ── still offline, or the server is holding it for confirmation ──────
+       Either way the order exists server-side and the webhook / status
+       refresh will settle it. Never invite a second payment.              */
+    var awaiting = res.offline || res.status === 202 ||
+                   (res.data && res.data.paymentState === "awaiting_verification");
+    if (awaiting) {
+      launchCart = []; saveLaunchCart();
+      try {
+        window.NafumeAPI.rememberCheckoutContact(nafumeOrderId, values.email || values.phone);
+        window.NafumeAPI.rememberAccountPrefill((res.data && res.data.accountPrefill) || {
+          name: values.name, email: values.email, phone: values.phone, orderId: nafumeOrderId
+        });
+      } catch (e) {}
+      showCheckoutStatus(NF_AWAITING_PAYMENT_MESSAGE +
+        " Payment ID: " + response.razorpay_payment_id + ".", "info");
+      try {
+        if (window.OperationsService) {
+          window.OperationsService.recordAnalyticsEvent("razorpay_payment_awaiting_confirmation", { orderId: nafumeOrderId });
+        }
+      } catch (e) {}
+      setTimeout(function () {
+        window.location.href = nfPath("/pages/order/confirmation.html") +
+          "?orderId=" + encodeURIComponent(nafumeOrderId) + "&payment=confirming";
+      }, 2600);
+      return;
+    }
+
     if (!res.ok) {
       setCheckoutBusy(false);
       showCheckoutStatus(
@@ -2881,19 +2918,6 @@ function verifyRazorpayPayment(response, nafumeOrderId, values, attempt) {
         " If money was deducted, contact us with payment ID " + response.razorpay_payment_id +
         " and we will sort it out immediately.",
         "error");
-      return;
-    }
-
-    /* ── verified, but the order could not be stored ────────────────────────
-       The payment is genuine and the team has been alerted server-side. Tell
-       the customer the truth: their money is fine and we are on it.         */
-    if (res.data.persisted === false) {
-      setCheckoutBusy(false);
-      launchCart = []; saveLaunchCart();
-      showCheckoutStatus(
-        "Your payment is confirmed. We hit a hiccup saving the order, so our team has been alerted and " +
-        "will confirm on WhatsApp shortly. Your payment ID is " + response.razorpay_payment_id + ".",
-        "success");
       return;
     }
 

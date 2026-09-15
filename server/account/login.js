@@ -108,8 +108,9 @@ module.exports = async function handler(req, res) {
       });
     }
 
-    // Late-linking: catches orders placed as a guest since the last login.
-    await repo.attachOrphanOrders(customer);
+    // Late-linking: guest orders placed since the last login with an email or
+    // phone this customer has VERIFIED. Unverified identifiers link nothing.
+    await repo.linkOwnedOrders(customer);
 
     const session = await auth.createSession(customer.id, "password");
     auth.setSessionCookie(req, res, session.token);

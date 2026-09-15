@@ -1,129 +1,71 @@
-﻿/*
- * POST /api/razorpay/verify-payment  —  verify the payment, then persist it as paid
+/*
+ * POST /api/razorpay/verify-payment  —  the browser's checkout callback
  * ============================================================================
- * This is the ONLY place in the system allowed to mark an order paid.
+ * Razorpay Checkout hands the browser { razorpay_order_id, razorpay_payment_id,
+ * razorpay_signature }. This endpoint decides what that means, and it never
+ * takes the browser's word for anything:
  *
- * Three independent checks must all pass before a rupee is recognised:
- *   1. SIGNATURE — HMAC_SHA256(order_id + "|" + payment_id, RAZORPAY_KEY_SECRET)
- *      must equal razorpay_signature (constant-time compare). This proves the
- *      callback really came from Razorpay and was not forged by the browser.
- *   2. PAYMENT STATE — the payment is fetched back from Razorpay's API and must
- *      be captured/authorised, belong to the same order, and be for the same
- *      amount we recorded. A signature alone cannot prove the money settled.
- *   3. AMOUNT — must match the total this server computed at create-order time.
+ *   1. SIGNATURE   HMAC_SHA256(order_id + "|" + payment_id, key secret), constant
+ *                  time. Invalid → 400, nothing changes.
+ *   2. ORDER       the Razorpay order id must belong to a local order.
+ *   3. PAYMENT     fetched back from Razorpay's API. It must be on this Razorpay
+ *                  order, for this order's exact amount and currency, and
+ *                  CAPTURED. See _lib/payments.js.
  *
- * IDEMPOTENCY (the requirement this endpoint exists to satisfy)
- *   Duplicate verification is normal: customers double-click, browsers retry,
- *   the success page gets refreshed. Every one of those paths is safe because
- *     - orders.razorpay_payment_id has a UNIQUE index, and
- *     - the paid transition is a CONDITIONAL update (payment_status = 'pending'),
- *       so the second caller updates zero rows and simply re-reads the same
- *       already-paid order.
- *   Confirmation emails are sent only on the transition, never on a repeat.
+ * OUTCOMES
+ *   200 paid                    captured and confirmed (or already confirmed)
+ *   202 awaiting_verification   signature valid but capture not confirmed yet:
+ *                               Razorpay says authorized/processing, or the
+ *                               lookup failed or timed out. The order waits;
+ *                               the webhook, the confirmation page's status
+ *                               refresh, or reconciliation settles it.
+ *   400 / 402                   signature invalid, payment failed, or the
+ *                               payment does not match the order.
  *
- * PAYMENT SUCCEEDED BUT THE DATABASE DID NOT
- *   The customer's money is real regardless of our storage. This endpoint then
- *   returns success with `persisted: false`, logs a CRITICAL line containing the
- *   payment id, and queues an alert to the team. It never pretends the order was
- *   saved and never tells the customer the payment failed.
+ * IDEMPOTENCY
+ *   The paid transition is one conditional UPDATE shared with the webhook and
+ *   reconciliation (repo.markOrderPaid), and razorpay_payment_id is UNIQUE.
+ *   Double clicks, refreshes, retries and a racing webhook all resolve to one
+ *   paid order and one set of confirmation emails.
  *
  * Env vars: RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET, SUPABASE_URL,
  *           SUPABASE_SERVICE_ROLE_KEY, optional RESEND_API_KEY.
  */
 "use strict";
 
-const crypto    = require("crypto");
 const http      = require("../_lib/http");
 const db        = require("../_lib/db");
 const repo      = require("../_lib/repo");
+const payments  = require("../_lib/payments");
 const messaging = require("../_lib/messaging");
-
-const KEY_ID     = process.env.RAZORPAY_KEY_ID;
-const KEY_SECRET = process.env.RAZORPAY_KEY_SECRET;
-const SITE_URL   = (process.env.SITE_URL || "").replace(/\/+$/, "");
 
 const RAZORPAY_ID_RE = /^[A-Za-z0-9_]{6,40}$/;
 
-/* ── signature ───────────────────────────────────────────────────────────── */
+const DO_NOT_PAY_AGAIN =
+  " Please don't pay again — our team has been alerted and will contact you.";
 
-function signatureIsValid(orderId, paymentId, signature) {
-  const expected = crypto.createHmac("sha256", KEY_SECRET)
-    .update(orderId + "|" + paymentId).digest("hex");
-  const a = Buffer.from(expected, "utf8");
-  const b = Buffer.from(signature, "utf8");
-  return a.length === b.length && crypto.timingSafeEqual(a, b);
+function awaiting(res, order, paymentId, reason) {
+  return http.json(res, 202, {
+    success:          true,
+    paymentState:     "awaiting_verification",
+    persisted:        !!order,
+    alreadyProcessed: false,
+    razorpay_payment_id: paymentId,
+    reason:           reason || null,
+    message:          payments.AWAITING_MESSAGE,
+    order:            order ? repo.publicOrder(order, null) : null,
+    accountPrefill:   order ? prefillFrom(order) : null
+  });
 }
-
-/* ── Razorpay payment fetch ──────────────────────────────────────────────── */
-
-async function fetchPayment(paymentId) {
-  if (!KEY_ID || !KEY_SECRET) return { error: "not_configured" };
-  const ctrl  = new AbortController();
-  const timer = setTimeout(function () { ctrl.abort(); }, 8000);
-  try {
-    const auth = Buffer.from(KEY_ID + ":" + KEY_SECRET).toString("base64");
-    const resp = await fetch("https://api.razorpay.com/v1/payments/" + encodeURIComponent(paymentId), {
-      method: "GET",
-      headers: { "Authorization": "Basic " + auth },
-      signal: ctrl.signal
-    });
-    clearTimeout(timer);
-    if (!resp.ok) return { error: "fetch_failed_" + resp.status };
-    return { payment: await resp.json() };
-  } catch (err) {
-    clearTimeout(timer);
-    return { error: err.name === "AbortError" ? "timeout" : "network_error" };
-  }
-}
-
-/* Best-effort: tag the Razorpay PAYMENT with our order id so the Dashboard
-   links both records. Never throws, never affects the response. */
-async function tagPaymentNotes(paymentId, nafumeOrderId) {
-  if (!KEY_ID || !KEY_SECRET || !nafumeOrderId) return;
-  try {
-    const auth = Buffer.from(KEY_ID + ":" + KEY_SECRET).toString("base64");
-    await fetch("https://api.razorpay.com/v1/payments/" + encodeURIComponent(paymentId), {
-      method:  "PATCH",
-      headers: { "Content-Type": "application/json", "Authorization": "Basic " + auth },
-      body:    JSON.stringify({ notes: { nafumeOrderId: nafumeOrderId } })
-    });
-  } catch (err) {
-    console.error("[razorpay/verify-payment] payment notes tag failed:", err.name);
-  }
-}
-
-/* ── orphan alert ────────────────────────────────────────────────────────────
-   A genuine payment we could not attach to an order. Loud log + queued email so
-   it can be reconciled by hand. Must never throw. */
-async function alertOrphanPayment(paymentId, rzpOrderId, reason) {
-  console.error("[razorpay/verify-payment] CRITICAL unreconciled payment", paymentId, rzpOrderId, reason);
-  try {
-    await messaging.send({
-      channel: "email",
-      to: messaging.NOTIFY_TO,
-      from: messaging.NOTIFY_FROM,
-      subject: "NAFUME — payment needs manual reconciliation (" + paymentId + ")",
-      body: "<p>A Razorpay payment verified successfully but could not be attached to an order.</p>" +
-            "<p>Payment ID: <strong>" + messaging.escapeHtml(paymentId) + "</strong><br/>" +
-            "Razorpay Order ID: <strong>" + messaging.escapeHtml(rzpOrderId) + "</strong><br/>" +
-            "Reason: " + messaging.escapeHtml(reason) + "</p>" +
-            "<p>Look this payment up in the Razorpay Dashboard and reconcile it manually.</p>",
-      relatedType: "order",
-      relatedId: paymentId
-    });
-  } catch (_) { /* the log line above is the durable record */ }
-}
-
-/* ── handler ─────────────────────────────────────────────────────────────── */
 
 module.exports = async function handler(req, res) {
   if (!http.guard(req, res, "POST")) return;
   if (!http.rateLimit(req, res, { key: "verify-payment", limit: 30, windowMs: 60000 })) return;
 
-  if (!KEY_SECRET) {
-    console.error("[razorpay/verify-payment] RAZORPAY_KEY_SECRET missing");
+  if (!payments.configured()) {
+    console.error("[razorpay/verify-payment] Razorpay credentials missing");
     return http.fail(res, 503, "payments_unavailable",
-      "Payment verification is unavailable. Please contact support with your payment ID.");
+      "Payment verification is unavailable right now." + DO_NOT_PAY_AGAIN);
   }
 
   const body = await http.body(req, res);
@@ -140,121 +82,115 @@ module.exports = async function handler(req, res) {
     return http.fail(res, 400, "invalid_fields", "Payment details are not valid.");
   }
 
-  /* ── check 1: signature ─────────────────────────────────────────────── */
-  let valid;
-  try {
-    valid = signatureIsValid(rzpOrderId, paymentId, signature);
-  } catch (err) {
-    return http.handleError(res, err, "razorpay/verify-payment");
-  }
-  if (!valid) {
+  /* ── 1. signature ─────────────────────────────────────────────────────── */
+  if (!payments.checkoutSignatureValid(rzpOrderId, paymentId, signature)) {
     console.warn("[razorpay/verify-payment] signature mismatch");
     return http.fail(res, 400, "invalid_signature",
       "Payment could not be verified. If money was deducted, please contact support with your payment ID.");
   }
 
-  /* ── check 2: payment state, straight from Razorpay ─────────────────── */
-  const fetched = await fetchPayment(paymentId);
-  if (fetched.payment) {
-    const p = fetched.payment;
-    if (p.order_id && p.order_id !== rzpOrderId) {
-      console.warn("[razorpay/verify-payment] payment/order mismatch");
-      return http.fail(res, 400, "payment_mismatch",
-        "Payment could not be matched to your order. Please contact support with your payment ID.");
-    }
-    if (p.status !== "captured" && p.status !== "authorized") {
-      return http.fail(res, 402, "payment_not_captured",
-        "This payment has not completed. If money was deducted it will be refunded automatically.");
-    }
-  }
-  // A failed fetch is NOT fatal: the signature already proves authenticity, and
-  // refusing a genuine payment because our outbound call timed out would be worse.
-
-  /* ── persistence ────────────────────────────────────────────────────── */
+  /* ── 2. the local order ───────────────────────────────────────────────── */
   if (!db.isConfigured()) {
-    await alertOrphanPayment(paymentId, rzpOrderId, "database_not_configured");
-    return http.json(res, 200, {
-      success: true, persisted: false, razorpay_payment_id: paymentId,
-      message: "Your payment is confirmed. Our team has been notified and will confirm your order shortly."
-    });
+    await payments.alertTeam("NAFUME — payment reported while storage is unavailable (" + paymentId + ")",
+      "<p>Payment ID <strong>" + messaging.escapeHtml(paymentId) + "</strong> on Razorpay order " +
+      messaging.escapeHtml(rzpOrderId) + " was reported by a customer while the database was not configured. " +
+      "Confirm it in the Razorpay dashboard.</p>", paymentId);
+    return awaiting(res, null, paymentId, "storage_unavailable");
+  }
+
+  let order;
+  try {
+    order = await repo.getOrderByRazorpayOrderId(rzpOrderId);
+    if (!order) {
+      const byPayment = await repo.getOrderByPaymentId(paymentId);
+      if (byPayment && byPayment.razorpay_order_id === rzpOrderId) order = byPayment;
+    }
+  } catch (err) {
+    console.error("[razorpay/verify-payment] order lookup failed:", err && err.message);
+    await payments.alertTeam("NAFUME — payment could not be matched: storage error (" + paymentId + ")",
+      "<p>Payment ID <strong>" + messaging.escapeHtml(paymentId) + "</strong> — database error during verification. " +
+      "Reconciliation will retry; check the Razorpay dashboard if it persists.</p>", paymentId);
+    return awaiting(res, null, paymentId, "storage_error");
+  }
+
+  if (!order) {
+    await payments.alertTeam("NAFUME — payment with no matching order (" + paymentId + ")",
+      "<p>A correctly signed payment <strong>" + messaging.escapeHtml(paymentId) + "</strong> names Razorpay order " +
+      messaging.escapeHtml(rzpOrderId) + ", which does not exist locally. Reconcile it by hand.</p>", paymentId);
+    return http.fail(res, 404, "order_not_found",
+      "We couldn't match this payment to an order." + DO_NOT_PAY_AGAIN,
+      { razorpay_payment_id: paymentId });
   }
 
   try {
-    const order = await repo.getOrderByRazorpayOrderId(rzpOrderId);
-
-    if (!order) {
-      // Could also be a duplicate call after the order id was rewritten — check
-      // by payment id before declaring it an orphan.
-      const byPayment = await repo.getOrderByPaymentId(paymentId);
-      if (byPayment) {
-        const items = await repo.getOrderItems(byPayment.id);
-        return http.ok(res, {
-          persisted: true, alreadyProcessed: true,
-          order: repo.publicOrder(byPayment, items),
-          accountPrefill: prefillFrom(byPayment)
-        });
+    // Already settled — a refresh, double-click, or the webhook got there first.
+    if (order.payment_status === "paid") {
+      const items = await repo.getOrderItems(order.id);
+      if (order.razorpay_payment_id && order.razorpay_payment_id !== paymentId) {
+        await payments.alertTeam("NAFUME — second payment on an already-paid order (" + order.order_id + ")",
+          "<p>Order <strong>" + messaging.escapeHtml(order.order_id) + "</strong> is paid by " +
+          messaging.escapeHtml(order.razorpay_payment_id) + " and the customer reported another payment " +
+          messaging.escapeHtml(paymentId) + ". Check for a duplicate charge.</p>", order.order_id);
       }
-      await alertOrphanPayment(paymentId, rzpOrderId, "no_matching_order");
-      return http.json(res, 200, {
-        success: true, persisted: false, razorpay_payment_id: paymentId,
-        message: "Your payment is confirmed. Our team has been notified and will confirm your order shortly."
+      return http.ok(res, {
+        paymentState: "paid", persisted: true, alreadyProcessed: true,
+        order: repo.publicOrder(order, items), accountPrefill: prefillFrom(order)
       });
     }
 
-    /* ── check 3: amount ──────────────────────────────────────────────── */
-    if (fetched.payment && Number(fetched.payment.amount) !== order.amount_total * 100) {
-      console.error("[razorpay/verify-payment] amount mismatch for order", order.order_id);
-      await alertOrphanPayment(paymentId, rzpOrderId, "amount_mismatch");
-      return http.fail(res, 400, "amount_mismatch",
-        "Payment amount could not be verified. Please contact support with your payment ID.");
+    /* ── 3. ask Razorpay ─────────────────────────────────────────────────── */
+    const fetched = await payments.fetchPayment(paymentId);
+    if (!fetched.ok) {
+      // Lookup failure is not evidence of payment. Hold, never mark paid.
+      console.warn("[razorpay/verify-payment] payment lookup failed:", fetched.reason, order.order_id);
+      const held = await repo.markAwaitingVerification(order, { paymentId: paymentId, note: "lookup_" + fetched.reason });
+      return awaiting(res, held, paymentId, "lookup_failed");
     }
 
-    const result = await repo.markOrderPaid(order, {
-      paymentId:       paymentId,
-      razorpayOrderId: rzpOrderId,
-      signature:       signature
-    });
+    const verdict = payments.evaluatePayment(order, fetched.payment);
 
-    const items = await repo.getOrderItems(result.order.id);
-
-    // Side effects only on the FIRST successful transition. A refresh or a
-    // retried callback must not re-send confirmation emails.
-    if (!result.alreadyPaid) {
-      await Promise.all([
-        tagPaymentNotes(paymentId, result.order.order_id),
-        messaging.send({
-          channel: "email", to: messaging.NOTIFY_TO, from: messaging.NOTIFY_FROM,
-          subject: "NAFUME Order Paid — " + result.order.order_id,
-          body: messaging.orderPaidTeamEmail(result.order, items),
-          relatedType: "order", relatedId: result.order.order_id, dedupe: true
-        }),
-        messaging.send({
-          channel: "email", to: result.order.ship_email,
-          subject: "Your NAFUME order " + result.order.order_id + " is confirmed",
-          body: messaging.orderPaidCustomerEmail(result.order, items, SITE_URL),
-          relatedType: "order", relatedId: result.order.order_id, dedupe: true
-        })
-      ]).catch(function (e) {
-        // Notifications are best-effort; the payment is already recorded.
-        console.error("[razorpay/verify-payment] post-payment notifications failed:", e && e.message);
+    if (verdict.outcome === "captured") {
+      const done  = await payments.confirmCaptured(order, fetched.payment, "checkout_callback", signature);
+      const items = await repo.getOrderItems(done.order.id);
+      return http.ok(res, {
+        paymentState: "paid", persisted: true, alreadyProcessed: !done.transitioned,
+        order: repo.publicOrder(done.order, items), accountPrefill: prefillFrom(done.order)
       });
     }
 
-    return http.ok(res, {
-      persisted:        true,
-      alreadyProcessed: result.alreadyPaid,
-      order:            repo.publicOrder(result.order, items),
-      accountPrefill:   prefillFrom(result.order)
-    });
+    if (verdict.outcome === "authorized" || verdict.outcome === "processing") {
+      const held = await repo.markAwaitingVerification(order, {
+        paymentId: paymentId, note: "razorpay_status_" + fetched.payment.status
+      });
+      return awaiting(res, held, paymentId, "not_captured");
+    }
+
+    if (verdict.outcome === "mismatch") {
+      console.error("[razorpay/verify-payment] payment does not match order", order.order_id, verdict.reason);
+      await payments.alertTeam("NAFUME — payment does not match its order (" + order.order_id + ")",
+        "<p>Payment <strong>" + messaging.escapeHtml(paymentId) + "</strong> failed the " +
+        messaging.escapeHtml(verdict.reason) + " check for order " + messaging.escapeHtml(order.order_id) +
+        ". The order was NOT marked paid. Reconcile it in the Razorpay dashboard.</p>", order.order_id);
+      const code = verdict.reason === "amount_mismatch" ? "amount_mismatch"
+                 : verdict.reason === "currency_mismatch" ? "currency_mismatch" : "payment_mismatch";
+      return http.fail(res, 400, code,
+        "We couldn't match this payment to your order." + DO_NOT_PAY_AGAIN,
+        { razorpay_payment_id: paymentId });
+    }
+
+    // failed / refunded
+    return http.fail(res, 402, "payment_not_captured",
+      "This payment did not complete. If money was deducted, it will be refunded automatically.",
+      { razorpay_payment_id: paymentId });
 
   } catch (err) {
-    // The payment IS genuine — never report failure to the customer here.
-    console.error("[razorpay/verify-payment] persistence failed:", err && err.message);
-    await alertOrphanPayment(paymentId, rzpOrderId, "persistence_error");
-    return http.json(res, 200, {
-      success: true, persisted: false, razorpay_payment_id: paymentId,
-      message: "Your payment is confirmed. Our team has been notified and will confirm your order shortly."
-    });
+    // Something broke after a correctly signed callback. The money may be real:
+    // hold the customer on "confirming", never on "failed" or "paid".
+    console.error("[razorpay/verify-payment] verification failed:", err && err.message);
+    await payments.alertTeam("NAFUME — payment verification error (" + paymentId + ")",
+      "<p>Verification of payment <strong>" + messaging.escapeHtml(paymentId) + "</strong> for order " +
+      messaging.escapeHtml(order.order_id) + " threw an error. Reconciliation will retry.</p>", order.order_id);
+    return awaiting(res, null, paymentId, "verification_error");
   }
 };
 

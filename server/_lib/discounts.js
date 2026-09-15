@@ -16,12 +16,21 @@
  *
  *   NAFUMEREVIEW    "10% off your next order"
  *                   Handed out after a review is submitted.
- *                   Allowance = number of reviews this customer has written.
- *                   Used = number of NAFUMEREVIEW redemptions they hold.
+ *                   The code itself is public, so the customer is what is
+ *                   checked: it applies only to a SIGNED-IN customer.
+ *                   Allowance = reviews written on orders that customer OWNS
+ *                   (orders.verified_owner_customer_id).
+ *                   Used = NAFUMEREVIEW redemptions they hold.
  *                   So one reward per review, and writing a second review earns
  *                   a second reward. Fabricating reviews is not a route to free
- *                   discounts: a review can only be submitted against a real
- *                   PAID order, one per (order, product).
+ *                   discounts: a review needs a real PAID and DELIVERED order,
+ *                   one per (order, product).
+ *
+ * DATABASE-LEVEL REUSE PROTECTION
+ *   Each redemption that holds an allowance takes a numbered slot
+ *   (slot_key = code|customer|n, partial UNIQUE index). Two checkouts racing
+ *   for the last slot cannot both get it; the loser's unpaid order is
+ *   cancelled and the customer is told the code was just used.
  *
  * WHAT "CONSUMED" MEANS  (see redemptionConsumes below)
  *   A redemption row is created when the order is created, before payment. If
@@ -103,7 +112,8 @@ function getCode(raw) {
    Whether this redemption still counts against the customer's allowance. */
 function redemptionConsumes(redemption, order) {
   if (!redemption) return false;
-  if (redemption.status === "released") return false;
+  if (redemption.status === "released" || redemption.status === "expired") return false;
+  if (redemption.status === "redeemed") return true;
 
   // No order attached yet (shouldn't happen) — treat the hold window as truth.
   if (!order) {
@@ -111,28 +121,41 @@ function redemptionConsumes(redemption, order) {
   }
   if (order.order_status === "cancelled") return false;
   if (order.payment_status === "paid") return true;
+  // The customer reported a payment we are still confirming — hold the slot.
+  if (order.payment_status === "awaiting_verification") return true;
   if (order.checkout_type === "cod") return true;      // confirmed, cash pending
 
   // An unpaid online attempt: holds the allowance briefly, then releases it.
   return Date.now() - new Date(order.created_at).getTime() < HOLD_MINUTES * 60000;
 }
 
-/* countRedemptions(code, customerId) -> number consumed right now */
-async function countRedemptions(code, customerId) {
-  if (!customerId) return 0;
+/* activeRedemptions(code, customerId) -> rows still holding an allowance.
+   Stale holds found on the way are marked `expired` and give their slot back. */
+async function activeRedemptions(code, customerId) {
+  if (!customerId) return [];
   const rows = await db.select("discount_redemptions", {
     where: { code: code, customer_id: customerId }
   });
-  if (!rows.length) return 0;
-
-  let consumed = 0;
+  const active = [];
   for (let i = 0; i < rows.length; i++) {
-    const order = rows[i].order_id
-      ? await db.selectOne("orders", { order_id: rows[i].order_id })
-      : null;
-    if (redemptionConsumes(rows[i], order)) consumed++;
+    const r = rows[i];
+    if (r.status === "released" || r.status === "expired") continue;
+    const order = r.order_id ? await db.selectOne("orders", { order_id: r.order_id }) : null;
+    if (redemptionConsumes(r, order)) { active.push(r); continue; }
+    if (r.status === "pending") {
+      const expired = order && order.order_status === "cancelled" ? "released" : "expired";
+      await db.update("discount_redemptions", {
+        where: { id: r.id, status: "pending" },
+        set:   { status: expired, slot_key: null, updated_at: db.nowISO() }
+      });
+    }
   }
-  return consumed;
+  return active;
+}
+
+/* countRedemptions(code, customerId) -> number consumed right now */
+async function countRedemptions(code, customerId) {
+  return (await activeRedemptions(code, customerId)).length;
 }
 
 /* hasPreviousOrder(customerId) — any order that counts as "has shopped before".
@@ -142,34 +165,23 @@ async function hasPreviousOrder(customerId) {
   const rows = await db.select("orders", { where: { customer_id: customerId } });
   return rows.some(function (o) {
     if (o.order_status === "cancelled") return false;
-    return o.payment_status === "paid" || o.checkout_type === "cod";
+    return o.payment_status === "paid" || o.payment_status === "awaiting_verification" ||
+           o.checkout_type === "cod";
   });
 }
 
-/* reviewAllowance(customerId, customerEmailNormalized)
-   How many NAFUMEREVIEW rewards this customer has earned = reviews written.
-   Matched by customer_id, with a fallback to author_email for a review left
-   before the customer record was linked. Hidden (rejected) reviews still count:
-   the reward was promised at submission time and withdrawing it after the fact
-   would be a poor experience for an honest customer. */
-async function reviewAllowance(customerId, emailNormalized) {
-  const seen = {};
-  let count = 0;
-
-  if (customerId) {
-    const byId = await db.select("reviews", { where: { customer_id: customerId } });
-    byId.forEach(function (r) { if (!seen[r.id]) { seen[r.id] = true; count++; } });
-  }
-  if (emailNormalized) {
-    const all = await db.select("reviews", {});
-    all.forEach(function (r) {
-      if (seen[r.id]) return;
-      if (r.author_email && validate.normalizeEmail(r.author_email) === emailNormalized) {
-        seen[r.id] = true; count++;
-      }
-    });
-  }
-  return count;
+/* reviewAllowance(customerId)
+   How many NAFUMEREVIEW rewards this customer has earned = reviews written on
+   orders this customer OWNS. Hidden (rejected) reviews still count: the reward
+   was promised at submission time and withdrawing it after the fact would be a
+   poor experience for an honest customer. */
+async function reviewAllowance(customerId) {
+  if (!customerId) return 0;
+  const owned = await db.select("orders", { where: { verified_owner_customer_id: customerId } });
+  if (!owned.length) return 0;
+  const ids = owned.map(function (o) { return o.order_id; });
+  const reviews = await db.select("reviews", { where: { order_id: ["in", ids] } });
+  return reviews.length;
 }
 
 /* ── eligibility ─────────────────────────────────────────────────────────────
@@ -197,14 +209,17 @@ async function checkEligibility(def, identity, priced) {
         return { eligible: false, reason: "already_used", message: NOT_ELIGIBLE };
       }
     }
-    return { eligible: true };
+    return { eligible: true, allowance: 1 };
   }
 
   if (def.rule === "review_reward") {
-    if (!customerId) {
-      return { eligible: false, reason: "no_review", message: NOT_ELIGIBLE };
+    // The code is public; only a signed-in customer can be matched to the
+    // reviews that earned it. The same message is given whoever is asking.
+    if (!identity.authenticated || !customerId) {
+      return { eligible: false, reason: "sign_in_required",
+        message: "Sign in to the NAFUME account linked to your reviewed order to use this code." };
     }
-    const earned = await reviewAllowance(customerId, identity.emailNormalized);
+    const earned = await reviewAllowance(customerId);
     if (earned < 1) {
       return { eligible: false, reason: "no_review", message: NOT_ELIGIBLE };
     }
@@ -212,7 +227,7 @@ async function checkEligibility(def, identity, priced) {
     if (used >= earned) {
       return { eligible: false, reason: "already_used", message: NOT_ELIGIBLE };
     }
-    return { eligible: true };
+    return { eligible: true, allowance: earned };
   }
 
   return { eligible: false, reason: "unknown_rule", message: NOT_ELIGIBLE };
@@ -224,11 +239,13 @@ async function checkEligibility(def, identity, priced) {
    discount must not write anything. */
 async function resolveIdentity(input) {
   input = input || {};
+  // input.customerId only ever comes from a server-side session lookup.
   if (input.customerId) {
     const c = await db.selectOne("customers", { id: input.customerId });
     if (c) {
       return {
         customerId: c.id,
+        authenticated: true,
         emailNormalized: c.email_normalized || null,
         phoneNormalized: c.phone_normalized || null
       };
@@ -244,6 +261,7 @@ async function resolveIdentity(input) {
 
   return {
     customerId: customer ? customer.id : null,
+    authenticated: false,
     emailNormalized: emailNormalized,
     phoneNormalized: phoneNormalized
   };
@@ -297,7 +315,8 @@ async function quote(rawCode, opts) {
     terms:    def.terms,
     discount: totals.promoDiscount,
     totals:   totals,
-    identity: identity
+    identity: identity,
+    allowance: eligibility.allowance || 1
   };
 }
 
@@ -306,11 +325,29 @@ async function quote(rawCode, opts) {
    a real order. UNIQUE(code, order_id) makes a retried write a no-op rather
    than a second consumption. */
 async function recordRedemption(input) {
+  const existingForOrder = await db.selectOne("discount_redemptions", { code: input.code, order_id: input.orderId });
+  if (existingForOrder) return { ok: true, row: existingForOrder };   // replayed order creation
+
+  const customerId = input.customerId || null;
+  const allowance  = Math.max(1, parseInt(input.allowance, 10) || 1);
+
+  // Pick the lowest free slot within the allowance. The UNIQUE index on
+  // slot_key is what actually guarantees exclusivity when requests race.
+  let slot = null;
+  if (customerId) {
+    const taken = (await activeRedemptions(input.code, customerId))
+      .map(function (r) { return r.allowance_slot; });
+    for (let n = 1; n <= allowance; n++) {
+      if (taken.indexOf(n) === -1) { slot = n; break; }
+    }
+    if (slot === null) return { ok: false, reason: "allowance_exhausted" };
+  }
+
   const now = db.nowISO();
   const row = {
     id:              db.newId(),
     code:            input.code,
-    customer_id:     input.customerId || null,
+    customer_id:     customerId,
     order_id:        input.orderId,
     order_uuid:      input.orderUuid || null,
     review_id:       input.reviewId || null,
@@ -318,28 +355,33 @@ async function recordRedemption(input) {
     discount_amount: input.discountAmount,
     final_amount:    input.finalAmount,
     status:          "pending",
+    allowance_slot:  slot,
+    slot_key:        customerId ? input.code + "|" + customerId + "|" + slot : null,
     created_at:      now,
     updated_at:      now,
     redeemed_at:     null
   };
   try {
     const inserted = await db.insert("discount_redemptions", row);
-    return (inserted && inserted[0]) || row;
+    return { ok: true, row: (inserted && inserted[0]) || row };
   } catch (err) {
     if (err instanceof db.UniqueViolationError) {
-      return db.selectOne("discount_redemptions", { code: input.code, order_id: input.orderId });
+      const same = await db.selectOne("discount_redemptions", { code: input.code, order_id: input.orderId });
+      if (same) return { ok: true, row: same };
+      return { ok: false, reason: "slot_taken" };
     }
     throw err;
   }
 }
 
-/* markRedeemed(orderId) — promotes any redemption on this order to 'redeemed'.
+/* markRedeemed(orderId) — promotes the redemption on this order to 'redeemed'.
    Called when the order becomes paid (or a COD order is confirmed). Safe to
-   call repeatedly. */
+   call repeatedly. An `expired` hold (the customer paid after the hold window)
+   is honoured too: the discounted amount has genuinely been paid. */
 async function markRedeemed(orderId) {
   if (!orderId) return;
   await db.update("discount_redemptions", {
-    where: { order_id: orderId, status: "pending" },
+    where: { order_id: orderId, status: ["in", ["pending", "expired"]] },
     set:   { status: "redeemed", redeemed_at: db.nowISO(), updated_at: db.nowISO() }
   });
 }
@@ -350,15 +392,25 @@ async function releaseRedemption(orderId) {
   if (!orderId) return;
   await db.update("discount_redemptions", {
     where: { order_id: orderId },
-    set:   { status: "released", updated_at: db.nowISO() }
+    set:   { status: "released", slot_key: null, updated_at: db.nowISO() }
   });
+}
+
+/* cancelUnpaidOrder(orderUuid) — an order that lost the race for a discount
+   slot. Only ever cancels an order nobody has paid for. */
+async function cancelUnpaidOrder(orderUuid) {
+  const rows = await db.update("orders", {
+    where: { id: orderUuid, payment_status: "pending" },
+    set:   { order_status: "cancelled", payment_note: "discount_slot_unavailable", updated_at: db.nowISO() }
+  });
+  if (rows && rows[0]) await releaseRedemption(rows[0].order_id);
 }
 
 module.exports = {
   CODES, HOLD_MINUTES, MIN_PAYABLE,
   normalizeCode, getCode,
   resolveIdentity, checkEligibility, quote,
-  recordRedemption, markRedeemed, releaseRedemption,
-  countRedemptions, hasPreviousOrder, reviewAllowance,
+  recordRedemption, markRedeemed, releaseRedemption, cancelUnpaidOrder,
+  countRedemptions, activeRedemptions, hasPreviousOrder, reviewAllowance,
   NOT_ELIGIBLE, NOT_FOUND
 };

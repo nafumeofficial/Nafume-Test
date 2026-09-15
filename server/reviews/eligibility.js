@@ -2,9 +2,11 @@
  * POST /api/reviews/eligibility  —  can this person review this order?
  * ============================================================================
  * Called by the review form before rendering, so the customer is told up front
- * "already reviewed" / "not paid" instead of typing a review and being rejected.
+ * "already reviewed" / "not delivered yet" / "not paid" instead of typing a
+ * review and being rejected.
  *
- * Body: { orderId, contact? }
+ * Body: { orderId, token? }   (token = the review link from the email; a
+ *                              signed-in owner needs no token)
  * Uses exactly the same rules as /api/reviews/submit (api/_lib/review-access.js).
  */
 "use strict";
@@ -35,7 +37,9 @@ module.exports = async function handler(req, res) {
       products:  state.products,
       delivered: state.delivered,
       deliveredAt: found.order.delivered_at,
-      reward:    { code: catalog.REVIEW_OFFER.code, label: catalog.REVIEW_OFFER.label }
+      access:    found.via,
+      // The reward is only described to someone who can actually earn it now.
+      reward:    state.eligible ? { code: catalog.REVIEW_OFFER.code, label: catalog.REVIEW_OFFER.label } : null
     });
 
   } catch (err) {

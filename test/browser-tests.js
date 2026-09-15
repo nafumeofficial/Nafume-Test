@@ -21,7 +21,11 @@ process.env.NAFUME_DB_DRIVER    = "memory";
 process.env.RAZORPAY_KEY_ID     = "rzp_test_browsersuite";
 process.env.RAZORPAY_KEY_SECRET = "browser_test_secret";
 process.env.ADMIN_API_TOKEN     = "browser_admin_token";
+process.env.CRON_SECRET         = "browser_cron_secret";
+process.env.RESEND_API_KEY      = "re_browser_local";     // mocked — verification codes are read from test/mocks.js
+process.env.SITE_URL            = "http://127.0.0.1";
 delete process.env.NAFUME_DB_FILE;
+delete process.env.VERCEL;
 
 const { spawn }   = require("child_process");
 const fs          = require("fs");
@@ -561,15 +565,33 @@ async function testRegisterPrefill(page) {
   eq("weak password flagged", await page.eval(
     "return document.getElementById('reg-password').classList.contains('has-error');"), true);
 
-  // Real registration. Read the status BEFORE the success screen's 2.2s
-  // auto-redirect to the dashboard fires.
+  // Step 1: details + password → a code is emailed; nothing is created yet.
   await page.eval("document.getElementById('reg-password').value = 'BrowserPass123'; document.getElementById('reg-form').requestSubmit(); return 1;");
   await page.wait(1400);
 
+  eq("registration asks for a verification code", await page.eval(
+    "return document.getElementById('reg-verify-form').style.display !== 'none';"), true);
+  ok("…and says where the code went", /@example\.com/.test(await page.eval(
+    "return document.getElementById('reg-verify-intro').textContent;")));
+  const me = await page.eval("const r = await fetch('/api/account/me'); return (await r.json()).authenticated;");
+  eq("no session before the code is entered", me, false);
+
+  // A wrong code is refused on the page.
+  await page.eval("document.getElementById('reg-code').value = '000001'; document.getElementById('reg-verify-form').requestSubmit(); return 1;");
+  await page.wait(900);
+  ok("a wrong code shows an error", (await page.eval("return document.getElementById('err-code').textContent;")).length > 0);
+
+  // Step 2: the real code (captured by the mocked email provider).
+  const code = mocks.lastCodeFor("browser@example.com");
+  ok("a code was emailed", /^\d{6}$/.test(code || ""), String(code));
+  await page.eval("document.getElementById('reg-code').value = '" + code + "'; document.getElementById('reg-verify-form').requestSubmit(); return 1;");
+  await page.wait(1400);
+
+  // Read the status BEFORE the success screen's 2.2s auto-redirect fires.
   const status = await page.eval(
     "var el = document.getElementById('reg-status'); return el ? el.textContent : '(already redirected)';");
   ok("account created", /account is ready/i.test(status), status);
-  ok("the order was linked to the new account", /1 order is already linked/i.test(status), status);
+  ok("the order was linked to the new account", /1 order is linked/i.test(status), status);
 
   // Redirects to the account dashboard, which loads real server data.
   await page.wait(3600);
@@ -930,6 +952,10 @@ async function testReviewLifecycle(page) {
 
   await page.setViewport(1280, 900, false);
 
+  // A guest this time: earlier suites left the browser signed in, and a
+  // signed-in checkout would (correctly) belong to that account.
+  await page.eval("await fetch('/api/account/logout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); return 1;");
+
   // Place a paid-equivalent order we can review. COD + delivered marks it paid.
   const orderId = await page.eval(`
     const shipping = {
@@ -945,31 +971,37 @@ async function testReviewLifecycle(page) {
   `);
   ok("test order created for the review flow", !!orderId, String(orderId));
 
+  // Knowing the order id is not enough to open the form.
+  await page.goto(BASE + "/pages/order/review.html?orderId=" + encodeURIComponent(orderId));
+  await page.wait(1500);
+  ok("without the email link or a session, the form does not open",
+    await page.eval("return !document.getElementById('review-form') && /review email|sign in/i.test(document.getElementById('review-root').innerText);"));
+
+  // Delivered ten days ago → the scheduled job emails the review link.
+  const tenDaysAgo = new Date(Date.now() - 10 * 86400000).toISOString();
   await page.eval(`
     await fetch('/api/admin/orders', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ${process.env.ADMIN_API_TOKEN}' },
-      body: JSON.stringify({ orderId: '${orderId}', action: 'mark_delivered' })
+      body: JSON.stringify({ orderId: '${orderId}', action: 'mark_delivered', deliveredAt: '${tenDaysAgo}' })
     });
+    await fetch('/api/jobs/review-requests', { method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ${process.env.CRON_SECRET}' }, body: '{}' });
     return 1;
   `);
+  const mail = mocks.state.emails.slice().reverse().find(function (e) {
+    return [].concat(e.to).indexOf("review.tester@example.com") !== -1 && /how is your nafume fragrance/i.test(e.subject || "");
+  });
+  const linkMatch = mail && /href="([^"]*\/pages\/order\/review[^"]*)"/.exec(mail.html || "");
+  ok("the review-request email carries a review link", !!linkMatch);
+  const link = linkMatch ? linkMatch[1].replace(/&amp;/g, "&") : "";
+  const tokenParam = (/[?&]token=([^&]+)/.exec(link) || [])[1] || "";
 
   // The customer opens the review link from the email.
-  await page.goto(BASE + "/pages/order/review.html?orderId=" + encodeURIComponent(orderId));
-  await page.wait(1500);
-
-  // No stored contact for this order in this browser, so it asks — correctly.
-  const askedForContact = await page.eval("return !!document.getElementById('lookup-form');");
-  if (askedForContact) {
-    ok("review form asks a guest to prove ownership", true);
-    await page.eval(`
-      document.getElementById('lk-order').value = '${orderId}';
-      document.getElementById('lk-contact').value = 'review.tester@example.com';
-      document.getElementById('lookup-form').requestSubmit();
-      return 1;
-    `);
-    await page.wait(1800);
-  }
+  await page.goto(BASE + "/pages/order/review.html?orderId=" + encodeURIComponent(orderId) + "&token=" + tokenParam);
+  await page.wait(1600);
+  ok("the token is removed from the address bar once read",
+    !/token=/.test(await page.eval("return location.search;")));
 
   eq("review form rendered", await page.eval("return !!document.getElementById('review-form');"), true);
   eq("product from the order is pre-listed", await page.eval(
@@ -1023,6 +1055,54 @@ async function testReviewLifecycle(page) {
     "return !/review\\.tester@example\\.com/.test(document.documentElement.innerHTML);"));
   ok("the reviewer's full name is not shown publicly", await page.eval(
     "return !/Review Tester/.test(document.body.innerText);"));
+}
+
+/* A payment Razorpay has authorized but not captured: the customer sees the
+   "confirming" state, is told not to pay again, and the page updates by itself
+   once capture is confirmed. Runs at phone width. */
+async function testPaymentConfirmingState(page) {
+  section("Payment confirming state (mobile width)");
+
+  await page.setViewport(390, 844, true);
+  await page.goto(BASE + "/");
+  const ship = {
+    name: "Confirming Tester", phone: "9876500077", email: "confirming.tester@example.com",
+    addr1: "4 Lake View Road", city: "Pune", state: "Maharashtra", pin: "411001"
+  };
+  const created = await page.eval(`
+    const r = await fetch('/api/razorpay/create-order', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items: [{ id: 'seduction', qty: 1 }], amount: 858, shipping: ${JSON.stringify(ship)} }) });
+    return await r.json();
+  `);
+  ok("online order created", !!(created && created.order_id), JSON.stringify(created).slice(0, 120));
+
+  const pay = mocks.simulatePayment(created.order_id, { status: "authorized" });
+  const verified = await page.eval(`
+    const r = await fetch('/api/razorpay/verify-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(${JSON.stringify(pay)}) });
+    return { status: r.status, body: await r.json() };
+  `);
+  eq("authorized payment → 202 from the server", verified.status, 202);
+
+  await page.eval("localStorage.setItem('nafume_order_contacts', JSON.stringify({ '" + created.nafume_order_id +
+    "': '" + ship.email + "' })); return 1;");
+  await page.goto(BASE + "/pages/order/confirmation.html?orderId=" + encodeURIComponent(created.nafume_order_id) + "&payment=confirming");
+  await page.wait(1800);
+  const text = await page.eval("return document.getElementById('confirmation-box').innerText;");
+  ok("confirmation page shows the confirming state", /confirming payment/i.test(text), text.slice(0, 160));
+  ok("…with the exact don't-pay-again message",
+    text.indexOf("We're confirming your payment. Please don't pay again. Your order status will update once confirmation arrives.") !== -1);
+  ok("…and never says 'Payment Successful'", !/payment successful/i.test(text));
+  eq("no horizontal overflow at phone width", await page.eval(
+    "return document.documentElement.scrollWidth <= window.innerWidth + 1;"), true);
+
+  // Razorpay captures it; the page's own polling picks that up.
+  mocks.setPaymentStatus(pay.razorpay_payment_id, "captured");
+  await page.wait(12000);
+  const after = await page.eval("return document.getElementById('confirmation-box').innerText;");
+  ok("the page updates to paid on its own once capture is confirmed", /payment successful/i.test(after), after.slice(0, 160));
+
+  await page.setViewport(1280, 900, false);
 }
 
 async function testBackendUnavailable(page) {
@@ -1085,7 +1165,7 @@ async function main() {
     testPagesLoadClean, testHomepageIntact, testPromoCodeUI, testCheckoutPage,
     testConfirmationAndAccountCta, testRegisterPrefill, testLoginLogout,
     testLeadPopup, testQuiz, testAdminPage, testReviewLifecycle,
-    testResponsive, testBackendUnavailable
+    testPaymentConfirmingState, testResponsive, testBackendUnavailable
   ];
 
   for (const suite of suites) {

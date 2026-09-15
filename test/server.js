@@ -8,6 +8,18 @@
  *   node test/server.js            → http://localhost:3100
  *   node test/run-tests.js         → starts this in-process and runs the suite
  *
+ * ROUTER MODES  (NAFUME_TEST_ROUTER)
+ *   "vercel"  (default) — production-shaped. The vercel.json rewrite
+ *             /api/:path* → /api?path=:path* is applied and the request goes
+ *             through api/index.js. Vercel's Node helpers are emulated the way
+ *             @vercel/node implements them: the body is read eagerly, replayed
+ *             to later 'data'/'end' listeners, and exposed as a lazy
+ *             `req.body` getter that parses by Content-Type (and throws on
+ *             malformed JSON). This is what makes raw-body webhook signature
+ *             handling testable locally.
+ *   "direct"  — each /api path is resolved straight to its /server handler
+ *             file, bypassing the router and the helpers.
+ *
  * It also serves the static site from the repo root, so the whole flow can be
  * clicked through in a browser (root-relative /css, /js, /pages links work).
  *
@@ -18,9 +30,14 @@
 const nodeHttp = require("http");
 const fs       = require("fs");
 const path     = require("path");
+const { PassThrough } = require("stream");
 
 const ROOT     = path.resolve(__dirname, "..");
 const API_ROOT = path.join(ROOT, "server");
+
+function routerMode() {
+  return String(process.env.NAFUME_TEST_ROUTER || "vercel").toLowerCase() === "direct" ? "direct" : "vercel";
+}
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -56,6 +73,62 @@ function decorate(res) {
     return res;
   };
   return res;
+}
+
+/* ── Vercel Node helper emulation ────────────────────────────────────────────
+   Mirrors @vercel/node's addHelpers(): read the whole body first, re-expose
+   the same bytes to 'data'/'end' listeners through a PassThrough, and define
+   req.body as a lazy getter.                                                 */
+
+function readWholeBody(req) {
+  return new Promise(function (resolve, reject) {
+    const chunks = [];
+    req.on("data", function (c) { chunks.push(c); });
+    req.on("end", function () { resolve(Buffer.concat(chunks)); });
+    req.on("error", reject);
+  });
+}
+
+async function addVercelHelpers(req) {
+  const contentType = req.headers["content-type"];
+  const body = contentType === undefined ? Buffer.from("") : await readWholeBody(req);
+
+  if (contentType !== undefined) {
+    const replica = new PassThrough();
+    const on = replica.on.bind(replica);
+    const originalOn = req.on.bind(req);
+    req.read = replica.read.bind(replica);
+    req.on = req.addListener = function (name, cb) {
+      return name === "data" || name === "end" ? on(name, cb) : originalOn(name, cb);
+    };
+    replica.write(body);
+    replica.end();
+  }
+
+  let parsed;
+  let computed = false;
+  Object.defineProperty(req, "body", {
+    configurable: true,
+    enumerable: true,
+    get: function () {
+      if (computed) return parsed;
+      computed = true;
+      const type = String(contentType || "").split(";")[0].trim().toLowerCase();
+      if (contentType === undefined) { parsed = undefined; return parsed; }
+      if (type === "application/json") {
+        const text = body.toString("utf8");
+        if (!text) { parsed = {}; return parsed; }
+        try { parsed = JSON.parse(text); }
+        catch (e) { computed = false; const err = new Error("Invalid JSON"); err.statusCode = 400; throw err; }
+        return parsed;
+      }
+      if (type === "text/plain") { parsed = body.toString("utf8"); return parsed; }
+      if (type === "application/octet-stream") { parsed = body; return parsed; }
+      parsed = body.toString("utf8");
+      return parsed;
+    },
+    set: function (v) { parsed = v; computed = true; }
+  });
 }
 
 /* ── API routing ─────────────────────────────────────────────────────────── */
@@ -116,6 +189,24 @@ function createServer() {
     req.query = Object.fromEntries(parsed.searchParams.entries());
 
     if (!parsed.pathname.startsWith("/api/")) return serveStatic(parsed.pathname, res);
+
+    if (routerMode() === "vercel") {
+      // vercel.json: { "source": "/api/:path*", "destination": "/api?path=:path*" }
+      const rest = parsed.pathname.replace(/^\/api\/?/, "");
+      req.query = Object.assign({}, req.query, { path: rest });
+      const router = require(path.join(ROOT, "api", "index.js"));
+      return Promise.resolve()
+        .then(function () { return addVercelHelpers(req); })
+        .then(function () { return router(req, res); })
+        .catch(function (err) {
+          console.error("[test/server] router threw:", err);
+          if (!res.headersSent) {
+            res.statusCode = 500;
+            res.setHeader("Content-Type", "application/json");
+            res.end(JSON.stringify({ success: false, error: "unhandled", message: String(err && err.message) }));
+          }
+        });
+    }
 
     const file = resolveApiFile(parsed.pathname);
     if (!file) {

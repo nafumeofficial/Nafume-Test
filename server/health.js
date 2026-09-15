@@ -20,26 +20,28 @@
  */
 "use strict";
 
-const crypto      = require("crypto");
 const http        = require("./_lib/http");
 const db          = require("./_lib/db");
 const configCheck = require("./_lib/config-check");
+const auth        = require("./_lib/auth");
 
-const ADMIN_API_TOKEN = process.env.ADMIN_API_TOKEN;
+/* Read per request; compared in constant time (see _lib/auth.js). */
+function tokenMatches(req) { return auth.bearerMatches(req, ["ADMIN_API_TOKEN"]); }
 
-function tokenMatches(req) {
-  if (!ADMIN_API_TOKEN) return false;
-  const header = String((req.headers && req.headers.authorization) || "");
-  const given  = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
-  if (!given) return false;
-  const a = Buffer.from(given);
-  const b = Buffer.from(ADMIN_API_TOKEN);
-  return a.length === b.length && crypto.timingSafeEqual(a, b);
-}
+/* Tables and columns added by db/migrations/20260915_launch_readiness.sql.
+   Their absence means the migration has not been applied to this database. */
+const MIGRATION_PROBES = [
+  { table: "verification_challenges", columns: "id,live_key" },
+  { table: "payment_events",          columns: "id,event_key" },
+  { table: "orders",                  columns: "id,verified_owner_customer_id,ship_email_normalized,pending_payment_id" },
+  { table: "customers",               columns: "id,email_verified_at,phone_verified_at" },
+  { table: "review_requests",         columns: "id,access_token_hash" },
+  { table: "discount_redemptions",    columns: "id,slot_key" }
+];
 
-/* A real read against a real table. Reports reachability and whether the schema
-   has actually been applied — a missing table is the single most common
-   "why is nothing saving?" cause. */
+/* A real read against real tables. Reports reachability and whether the schema
+   AND the latest migration have actually been applied — a missing table or
+   column is the single most common "why is nothing saving?" cause. */
 async function probeDatabase() {
   if (!db.isConfigured()) {
     return { reachable: false, schemaApplied: false, error: "not_configured" };
@@ -47,7 +49,18 @@ async function probeDatabase() {
   const started = Date.now();
   try {
     await db.select("orders", { limit: 1 });
-    return { reachable: true, schemaApplied: true, latencyMs: Date.now() - started };
+    const missing = [];
+    for (let i = 0; i < MIGRATION_PROBES.length; i++) {
+      const p = MIGRATION_PROBES[i];
+      try { await db.select(p.table, { columns: p.columns, limit: 1 }); }
+      catch (_) { missing.push(p.table); }
+    }
+    return {
+      reachable: true, schemaApplied: true,
+      migrationApplied: missing.length === 0,
+      missingMigrationObjects: missing.length ? missing : undefined,
+      latencyMs: Date.now() - started
+    };
   } catch (err) {
     const detail = (err && err.detail) ? String(err.detail) : "";
     // PostgREST answers PGRST205 / 42P01 when the table does not exist.
@@ -83,7 +96,7 @@ module.exports = async function handler(req, res) {
   const report   = configCheck.inspect();
   const database = await probeDatabase();
 
-  const ok = report.ok && database.reachable && database.schemaApplied;
+  const ok = report.ok && database.reachable && database.schemaApplied && database.migrationApplied === true;
 
   return http.json(res, ok ? 200 : 503, {
     success: true,
@@ -110,6 +123,13 @@ function buildNextSteps(report, database) {
   if (!database.reachable && database.error === "unreachable") {
     steps.push("Database unreachable. Check SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY and that the project is not paused.");
   }
+  if (database.schemaApplied && database.migrationApplied === false) {
+    steps.push("Apply db/migrations/20260915_launch_readiness.sql — missing: " +
+      (database.missingMigrationObjects || []).join(", ") + ".");
+  }
+  if (report.storage.memoryRefused) {
+    steps.push("NAFUME_DB_DRIVER=memory is set on a hosted deployment and was refused. Remove it and configure Supabase.");
+  }
   report.missingRequired.forEach(function (name) {
     steps.push("Set " + name + " — the site cannot take orders without it.");
   });
@@ -120,7 +140,7 @@ function buildNextSteps(report, database) {
     steps.push("Set RAZORPAY_WEBHOOK_SECRET and add the webhook in Razorpay so payments survive a closed browser.");
   }
   if (!report.capabilities.sendsEmail) {
-    steps.push("Set RESEND_API_KEY to deliver the messages currently queued in outbound_messages.");
+    steps.push("Set RESEND_API_KEY — account creation needs emailed verification codes, and queued messages in outbound_messages are waiting for it.");
   }
   if (!report.capabilities.adminApi) {
     steps.push("Set ADMIN_API_TOKEN to record delivery dates — review requests cannot become due without it.");

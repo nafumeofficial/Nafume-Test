@@ -8,27 +8,29 @@ database for customers and orders.
 
 ## Before it can take orders
 
-Four environment variables are required. Everything else degrades cleanly and
-says so.
+> **Current launch status and the exact remaining steps are in
+> [`NAFUME-READINESS-REPORT.md`](NAFUME-READINESS-REPORT.md).**
 
-| Variable | Where to get it |
-|---|---|
-| `SUPABASE_URL` | supabase.com → Settings → API |
-| `SUPABASE_SERVICE_ROLE_KEY` | same page — **server-side only, never in frontend code** |
-| `RAZORPAY_KEY_ID` | dashboard.razorpay.com → Settings → API Keys |
-| `RAZORPAY_KEY_SECRET` | same page |
+| Variable | Why | Where to get it |
+|---|---|---|
+| `SUPABASE_URL` | orders, customers, consent persist | supabase.com → Settings → API Keys |
+| `SUPABASE_SERVICE_ROLE_KEY` | server-side DB access — **never in frontend code** | same page (secret key) |
+| `RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET` | online payment | dashboard.razorpay.com → API Keys |
+| `RAZORPAY_WEBHOOK_SECRET` | confirms captured payments when the browser never returns | Razorpay → Webhooks |
+| `RESEND_API_KEY` + `CUSTOMER_EMAIL_FROM` | account verification codes, confirmations, review links | resend.com (verified domain) |
+| `ADMIN_API_TOKEN` / `CRON_SECRET` / `SITE_URL` | delivery recording, scheduled jobs, email links | generate / your domain |
 
-1. Run **all** of `db/schema.sql` in the Supabase SQL editor (idempotent — safe
-   to re-run, never drops data).
-2. Add the variables in Vercel → Settings → Environment Variables (Production
-   *and* Preview), then redeploy.
+1. **New database:** run all of `db/schema.sql`. **Existing database:** back it
+   up, then apply only the unapplied files in `db/migrations/` — never re-run
+   the whole schema blindly.
+2. Add the variables in Vercel → Settings → Environment Variables. Use a
+   separate Supabase project and Razorpay **test** keys for Preview.
+3. Redeploy, then run `node test/check-live-services.js --site https://<deployment>`.
 
-See **`.env.example`** for every variable, and
-**`docs/customer-data-system.md`** for the full architecture, the payment flow,
-the consent model and the API reference.
+See **`.env.example`** for every variable.
 
 **Without the database configured, checkout returns a clear 503 rather than
-silently losing orders.**
+silently losing orders — and the in-memory driver is refused on Vercel.**
 
 ---
 
@@ -37,15 +39,26 @@ silently losing orders.**
 ```
 product page → add to cart → /pages/order/shipping (checkout)
    │
-   ├── Pay Online → /api/razorpay/create-order → Razorpay
-   │                → /api/razorpay/verify-payment (signature + payment verified
-   │                  server-side, then the order is marked paid — idempotent)
+   ├── Pay Online → /api/razorpay/create-order → Razorpay Checkout
+   │                → /api/razorpay/verify-payment
+   │                   signature ✓ + Razorpay says CAPTURED, same order/amount/currency
+   │                     → paid (one conditional update, shared by every path)
+   │                   authorized / lookup failed → awaiting_verification
+   │                     ("We're confirming your payment. Please don't pay again…")
+   │                → settled later by /api/razorpay/webhook (raw-body signature),
+   │                  the confirmation page's status refresh, or reconciliation
    │
    └── Cash on Delivery → /api/orders/create-cod
    │
    ▼
 /pages/order/confirmation → "Create your account to track this order"
+   → /api/account/register (sends a code) → /api/account/verify (proves the email,
+     then links only the orders placed with it)
 ```
+
+Reviews open once a delivery is recorded, for the order's verified owner or
+via the link in the review-request email (sent `REVIEW_REQUEST_DELAY_DAYS`
+after delivery). `NAFUMEREVIEW` is redeemable only by the signed-in owner.
 
 WhatsApp remains available for support and courtesy confirmation. It is no
 longer where an order is created.
@@ -57,23 +70,28 @@ longer where an order is created.
 Node 18+ (Node 22+ and Chrome/Edge for the browser suite). No install step.
 
 ```bash
-node test/lint.js           # 650 checks — syntax, dead refs, secret scan
-node test/run-tests.js      # 501 API checks against the real handlers
-node test/browser-tests.js  # 151 checks in headless Chrome
+node test/lint.js           # syntax, dead refs, secret scan
+node test/run-tests.js      # 769 API checks, routed through api/index.js with
+                            # Vercel's Node helpers emulated
+NAFUME_TEST_ROUTER=direct node test/run-tests.js   # same suite, handlers directly
+node test/browser-tests.js  # 165 checks in headless Chrome/Edge
 NAFUME_DB_DRIVER=memory node test/server.js   # run the whole site locally
 ```
 
-Those run against the memory driver with the external HTTP boundary mocked.
-Once you have real credentials, verify the live services with:
+Those run against the memory driver with the external HTTP boundary
+(Razorpay, Resend, MSG91) mocked — they prove the code's decisions, not the
+live providers. Once you have real credentials, verify the live services with:
 
 ```bash
-node test/check-live-services.js                        # Supabase + Razorpay
-node test/check-live-services.js --email you@domain.com # also sends one real email
+node test/check-live-services.js                        # Supabase (+ migration) + Razorpay
+node test/check-live-services.js --email you@domain.com # one real email + its delivery event
+node test/check-live-services.js --write-persistence-probe   # then redeploy and…
+node test/check-live-services.js --verify-persistence <marker>
+node test/check-live-services.js --site https://<deployment>  # read-only deployment checks
 ```
 
-It creates only clearly-marked test data, cleans up after itself, never moves
-money, and never prints a secret. See **`docs/deployment-checklist.md`** for the
-step-by-step go-live guide.
+It creates only clearly-marked test data, never moves money, and never prints
+a secret.
 
 Check a running deployment at any time:
 
@@ -243,18 +261,11 @@ css/
 js/
 ```
 
-**Do NOT upload:**
-
-```
-_archive/
-_backup*/
-docs/
-ref/
-test/
-db/            ← run schema.sql by hand in Supabase; do not serve it
-.claudeignore
-.env
-```
+**Never served:** `.vercelignore` keeps `test/`, `db/`, `docs/`, `ref/`,
+archives and `*.md` out of the deployment, and `vercel.json` redirects public
+requests for `/server/*` (bundled into the function, not a website asset).
+Before this, the test deployment served the backend source, schema and audit
+notes as public files.
 
 **Update before launch:**
 - Set the four required environment variables (see the top of this README) and

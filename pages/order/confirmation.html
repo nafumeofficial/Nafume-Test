@@ -213,9 +213,9 @@
 
            A guest has no session, so ownership is proved with the contact
            detail captured at checkout (stored per order id by the API client). */
-        async function loadOrder(orderId) {
+        async function loadOrder(orderId, refreshPayment) {
             if (window.NafumeAPI) {
-                const res = await window.NafumeAPI.lookupOrder(orderId);
+                const res = await window.NafumeAPI.lookupOrder(orderId, null, { refreshPayment: !!refreshPayment });
                 if (res.ok && res.data.order) {
                     return { order: window.NafumeAPI.toLocalOrder(res.data.order), source: "server" };
                 }
@@ -258,9 +258,11 @@
                 <p class="text-body-md text-text-secondary font-light">Loading your order…</p>
             `;
 
-            const loaded = await loadOrder(orderId);
+            const confirming = params.get("payment") === "confirming";
+            const loaded = await loadOrder(orderId, confirming);
             const order  = loaded.order;
             currentActiveOrder = order;
+            const e = escapeHtmlText;
 
             // Graceful fallback: order could not be loaded
             if (!order) {
@@ -269,8 +271,8 @@
                     <h2 class="text-headline-sm font-semibold text-primary mb-3">Order Not Found</h2>
                     <p class="text-body-md text-text-secondary font-light max-w-sm mx-auto mb-8 leading-relaxed">
                         ${loaded.message
-                            ? loaded.message
-                            : `We couldn't load order <strong>${orderId}</strong>. If you placed it on another device, look it up on the Track Order page using your order ID and the email or phone you used.`}
+                            ? e(loaded.message)
+                            : `We couldn't load order <strong>${e(orderId)}</strong>. If you placed it on another device, look it up on the Track Order page using your order ID and the email or phone you used.`}
                     </p>
                     <div class="flex flex-col sm:flex-row gap-4 justify-center w-full">
                         <a href="track-order.html" class="inline-flex justify-center px-8 py-4 bg-primary text-white text-label-sm font-semibold uppercase tracking-widest hover:bg-[#222] transition-colors rounded-sm">Track an Order</a>
@@ -295,7 +297,7 @@
                 const line = (it.price || 0) * qty;
                 itemsHtml += `
                     <div class="flex gap-4 items-center justify-between text-xs py-2 text-text-secondary border-b border-border-muted/20">
-                        <span class="truncate font-medium text-primary">${it.name} ${it.size ? "(" + it.size + ")" : ""} × ${qty}</span>
+                        <span class="truncate font-medium text-primary">${e(it.name)} ${it.size ? "(" + e(it.size) + ")" : ""} × ${e(qty)}</span>
                         <span class="font-semibold whitespace-nowrap text-primary">${curr(line)}</span>
                     </div>`;
             });
@@ -305,8 +307,30 @@
             // or is due on delivery (COD) — WhatsApp is no longer a step.
             const isPaid = order.paymentStatus === "paid";
             const isCod  = order.paymentMethod === "cod" || order.checkoutType === "cod";
+            const isConfirmingPayment = !isPaid && !isCod &&
+                (order.paymentStatus === "awaiting_verification" || (confirming && order.paymentStatus === "pending"));
+            const isPaymentFailed = !isPaid && !isCod && order.paymentStatus === "failed";
 
-            const headerHtml = isPaid ? `
+            const headerHtml = isConfirmingPayment ? `
+                <span class="material-symbols-outlined text-4xl text-accent-bronze mb-4 animate-pulse">hourglass_top</span>
+                <span class="text-[10px] font-semibold text-accent-bronze uppercase tracking-[0.2em] mb-2 block">Confirming Payment</span>
+                <h2 class="text-headline-sm font-semibold text-primary mb-4 italic">Your order is saved</h2>
+
+                <div class="bg-accent-bronze/10 border border-accent-bronze/20 p-4 rounded text-left mb-6 text-xs text-primary leading-relaxed font-light flex items-start gap-3" id="payment-confirming-note" role="status" aria-live="polite">
+                    <span class="material-symbols-outlined text-accent-bronze text-[18px] flex-shrink-0 mt-0.5">schedule</span>
+                    <div>
+                        <strong class="font-semibold text-accent-bronze uppercase tracking-wider block mb-1">Payment Being Confirmed</strong>
+                        We're confirming your payment. Please don't pay again. Your order status will update once confirmation arrives.
+                        <br/><span class="text-text-secondary" id="payment-confirming-progress">Checking now…</span>
+                    </div>
+                </div>` : isPaymentFailed ? `
+                <span class="material-symbols-outlined text-4xl text-[#ba1a1a] mb-4">error_outline</span>
+                <span class="text-[10px] font-semibold text-[#ba1a1a] uppercase tracking-[0.2em] mb-2 block">Payment Not Completed</span>
+                <h2 class="text-headline-sm font-semibold text-primary mb-4 italic">We couldn't confirm a payment for this order</h2>
+                <div class="bg-[#ba1a1a]/5 border border-[#ba1a1a]/20 p-4 rounded text-left mb-6 text-xs text-primary leading-relaxed font-light">
+                    Razorpay reported this payment as unsuccessful. If money was deducted it is refunded automatically.
+                    Please contact support with your order ID before trying again.
+                </div>` : isPaid ? `
                 <span class="material-symbols-outlined text-4xl text-[#2e7d32] mb-4">check_circle</span>
                 <span class="text-[10px] font-semibold text-[#2e7d32] uppercase tracking-[0.2em] mb-2 block">Payment Successful</span>
                 <h2 class="text-headline-sm font-semibold text-primary mb-4 italic">Thank You — Your Order is Confirmed</h2>
@@ -316,7 +340,7 @@
                     <div>
                         <strong class="font-semibold text-[#2e7d32] uppercase tracking-wider block mb-1">Paid Online — Verified</strong>
                         Your payment has been verified and your order is saved. We'll dispatch within 24 hours and email your tracking details. Nothing else is needed from you.
-                        ${order.razorpay ? `<br/><span class="text-text-secondary">Payment ID: ${order.razorpay.paymentId || "—"}</span>` : ""}
+                        ${order.razorpay ? `<br/><span class="text-text-secondary">Payment ID: ${e(order.razorpay.paymentId || "—")}</span>` : ""}
                     </div>
                 </div>` : `
                 <span class="material-symbols-outlined text-4xl text-[#2e7d32] mb-4">check_circle</span>
@@ -348,15 +372,15 @@
 
                 <div class="w-full text-left text-xs mb-6 text-text-secondary border border-border-muted/50 p-4 rounded bg-surface/30">
                     <div class="flex justify-between border-b border-border-muted/30 pb-2 mb-2 font-semibold">
-                        <span>Order ID: <strong class="text-primary font-bold">${order.orderId}</strong></span>
-                        <span class="${isPaid ? "text-[#2e7d32]" : "text-accent-bronze"} uppercase font-bold">${humanOrderStatus(order.status)}</span>
+                        <span>Order ID: <strong class="text-primary font-bold">${e(order.orderId)}</strong></span>
+                        <span class="${isPaid ? "text-[#2e7d32]" : "text-accent-bronze"} uppercase font-bold">${e(humanOrderStatus(order.status))}</span>
                     </div>
                     <div class="space-y-1">
-                        <p><strong>Customer:</strong> ${c.name || "—"}</p>
-                        <p><strong>Phone:</strong> ${c.phone || "—"}</p>
-                        <p><strong>Email:</strong> ${c.email || "—"}</p>
-                        <p><strong>Address:</strong> ${c.address || "—"}, ${c.city || ""} ${c.state || ""} ${c.pincode ? "- " + c.pincode : ""}</p>
-                        <p><strong>Payment:</strong> ${order.paymentMethod || "—"} &nbsp;·&nbsp; <strong>Payment Status:</strong> ${titleCase(order.paymentStatus)}</p>
+                        <p><strong>Customer:</strong> ${e(c.name || "—")}</p>
+                        <p><strong>Phone:</strong> ${e(c.phone || "—")}</p>
+                        <p><strong>Email:</strong> ${e(c.email || "—")}</p>
+                        <p><strong>Address:</strong> ${e(c.address || "—")}, ${e(c.city || "")} ${e(c.state || "")} ${c.pincode ? "- " + e(c.pincode) : ""}</p>
+                        <p><strong>Payment:</strong> ${e(order.paymentMethod || "—")} &nbsp;·&nbsp; <strong>Payment Status:</strong> ${e(isConfirmingPayment ? "Confirming" : titleCase(String(order.paymentStatus || "").replace(/_/g, " ")))}</p>
                     </div>
                 </div>
 
@@ -396,7 +420,34 @@
             `;
 
             renderAccountCta(order);
+            if (isConfirmingPayment) pollPaymentStatus(orderId);
         });
+
+        /* While a payment is being confirmed, ask the server to re-check with
+           Razorpay (it throttles itself) and reload once the order is settled.
+           Backs off to a slow poll, and never tells the customer to pay again. */
+        function pollPaymentStatus(orderId) {
+            let tries = 0;
+            const progress = () => document.getElementById("payment-confirming-progress");
+            async function tick() {
+                tries++;
+                const res = await window.NafumeAPI.lookupOrder(orderId, null, { refreshPayment: true });
+                const status = res.ok && res.data.order ? res.data.order.paymentStatus : null;
+                if (status === "paid" || status === "failed") {
+                    window.location.href = window.location.pathname + "?orderId=" + encodeURIComponent(orderId);
+                    return;
+                }
+                const p = progress();
+                if (p) {
+                    p.textContent = res.offline
+                        ? "You're offline — we'll keep checking when you reconnect."
+                        : (tries < 20 ? "Still confirming… this page updates automatically."
+                                      : "This is taking longer than usual. We'll email you as soon as it's confirmed — no need to pay again.");
+                }
+                setTimeout(tick, tries < 20 ? 6000 : 30000);
+            }
+            setTimeout(tick, 3000);
+        }
 
         // Upgrade 10: order-aware support message (WhatsApp, with email fallback).
         function contactSupportAboutOrder() {
@@ -431,8 +482,8 @@
             if (awb) {
                 return '<p class="text-[11px] text-text-secondary/80 font-light mt-5 flex items-center justify-center gap-1 text-center">' +
                     '<span class="material-symbols-outlined text-[14px] text-accent-bronze">local_shipping</span>' +
-                    'AWB <strong class="text-primary">' + String(awb) + '</strong>' +
-                    (t.courierName ? ' · ' + String(t.courierName) : '') + ' — track live on the Track Order page.</p>';
+                    'AWB <strong class="text-primary">' + escapeHtmlText(awb) + '</strong>' +
+                    (t.courierName ? ' · ' + escapeHtmlText(t.courierName) : '') + ' — track live on the Track Order page.</p>';
             }
             return '<p class="text-[11px] text-text-secondary/80 font-light mt-5 flex items-center justify-center gap-1 text-center">' +
                 '<span class="material-symbols-outlined text-[14px] text-accent-bronze">schedule</span>' +
@@ -472,7 +523,7 @@
                     '<p class="nf-account-cta-sub">' +
                         'We\'ll use the details you just entered' +
                         (prefill.email ? ' (' + escapeHtmlText(prefill.email) + ')' : '') +
-                        ' — just pick a password. Future orders attach to the same account automatically.' +
+                        ' — pick a password and enter the code we email you. Orders placed with that email then appear in your account.' +
                     '</p>' +
                     '<div class="nf-account-cta-row">' +
                         '<a class="nf-account-cta-btn" href="../account/register.html?from=order&orderId=' +

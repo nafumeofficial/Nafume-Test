@@ -7,6 +7,9 @@
  *
  * Only ever returns data belonging to the session's own customer, through the
  * publicCustomer/publicOrder projections (no password hashes, no internal ids).
+ * Order history is the orders this customer OWNS (placed while signed in, or
+ * placed with an email/phone they have verified) — never orders that merely
+ * share a typed detail with them. See _lib/repo.js "OWNERSHIP MODEL".
  */
 "use strict";
 
@@ -28,7 +31,7 @@ module.exports = async function handler(req, res) {
       return http.ok(res, { authenticated: false, customer: null, orders: [] });
     }
 
-    const orders = await repo.getOrdersForCustomer(session.customer.id, 50);
+    const orders = await repo.getOwnedOrders(session.customer.id, 50);
 
     // One item query per order is fine at this volume; orders are capped at 50
     // and this is a single customer's own history.

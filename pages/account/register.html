@@ -210,6 +210,25 @@
         <button type="submit" class="nf-auth-submit" id="reg-submit" disabled>Create account</button>
       </form>
 
+      <!-- Step 2: prove the email (or phone) before anything is linked. -->
+      <form id="reg-verify-form" novalidate autocomplete="off" style="display:none;">
+        <p class="nf-auth-sub" id="reg-verify-intro"></p>
+        <div class="nf-auth-field">
+          <label class="nf-auth-label" for="reg-code">6-digit code</label>
+          <input id="reg-code" name="code" class="nf-auth-input" type="text" inputmode="numeric"
+                 autocomplete="one-time-code" maxlength="6" placeholder="······"
+                 style="letter-spacing:0.3em;text-align:center;"/>
+          <p class="nf-auth-error" id="err-code"></p>
+        </div>
+        <button type="submit" class="nf-auth-submit" id="reg-verify-submit">Verify &amp; create account</button>
+        <p class="nf-auth-alt">
+          <button type="button" id="reg-resend" style="background:none;border:none;text-decoration:underline;color:#111;font-size:12.5px;">Send a new code</button>
+          <span id="reg-resend-wait" style="color:#999;"></span>
+          · <button type="button" id="reg-use-sms" style="background:none;border:none;text-decoration:underline;color:#111;font-size:12.5px;">Text the code to my mobile instead</button>
+          · <button type="button" id="reg-back" style="background:none;border:none;text-decoration:underline;color:#111;font-size:12.5px;">Change my details</button>
+        </p>
+      </form>
+
       <p class="nf-auth-alt">
         Already have an account? <a href="account.html">Sign in</a>
       </p>
@@ -234,14 +253,16 @@
 
   <script>
     /* ── Registration ───────────────────────────────────────────────────────
-       Real account creation against POST /api/account/register.
+       Two steps, both enforced by the server:
+         1. POST /api/account/register  — validates and sends a 6-digit code to
+            the email (or, on request, by SMS). Nothing is created yet.
+         2. POST /api/account/verify    — the code proves the customer controls
+            that address; only then is the account created, earlier orders
+            placed with that address linked, and the session started.
 
        The post-checkout path is the important one: when the customer arrives
        from the confirmation page, the name/email/phone they just typed are
-       pre-filled from the prefill the verify-payment response handed back, so
-       the only thing left to enter is a password. Registering attaches
-       credentials to the customer record their order already created — it does
-       not make a second customer — so their order history is right immediately.
+       pre-filled, so the only things left are a password and the code.
 
        Password handling is entirely server-side (scrypt); this page never
        stores, caches or logs it.                                              */
@@ -299,9 +320,9 @@
         if (params.get("from") === "order" && orderId) {
           document.getElementById("reg-title").textContent = "Create your account to track this order";
           document.getElementById("reg-subtitle").textContent =
-            "We've filled in the details from your order — just choose a password.";
+            "We've filled in the details from your order — choose a password, then confirm the code we email you.";
           orderNote.style.display = "block";
-          orderNote.textContent = "Order " + orderId + " will be linked to this account automatically.";
+          orderNote.textContent = "Order " + orderId + " will be linked once you confirm the email it was placed with.";
         }
         // Focus the only field they still need to fill.
         try { el("reg-password").focus({ preventScroll: true }); } catch (e) {}
@@ -345,6 +366,64 @@
         });
       });
 
+      /* ── step 2 elements ──────────────────────────────────────────────── */
+      var verifyForm   = el("reg-verify-form");
+      var verifySubmit = el("reg-verify-submit");
+      var codeInput    = el("reg-code");
+      var resendBtn    = el("reg-resend");
+      var resendWait   = el("reg-resend-wait");
+      var pending      = { values: null, challengeId: null, channel: "email" };
+      var resendTimer  = null;
+
+      function startResendCountdown(seconds) {
+        clearInterval(resendTimer);
+        var left = Math.max(1, parseInt(seconds, 10) || 30);
+        resendBtn.disabled = true;
+        resendWait.textContent = " (" + left + "s)";
+        resendTimer = setInterval(function () {
+          left--;
+          if (left <= 0) { clearInterval(resendTimer); resendBtn.disabled = false; resendWait.textContent = ""; }
+          else resendWait.textContent = " (" + left + "s)";
+        }, 1000);
+      }
+
+      function showVerifyStep(data) {
+        pending.challengeId = data.challengeId;
+        pending.channel = data.channel || "email";
+        form.style.display = "none";
+        verifyForm.style.display = "block";
+        el("reg-verify-intro").textContent = data.message ||
+          ("Enter the 6-digit code we sent to " + (data.destination || "you") + ".");
+        el("reg-use-sms").style.display = pending.channel === "phone" ? "none" : "";
+        el("err-code").textContent = "";
+        codeInput.value = "";
+        clearStatus();
+        startResendCountdown(data.resendAfterSeconds || 30);
+        try { codeInput.focus(); } catch (e) {}
+      }
+
+      function sendCode(channel) {
+        submit.disabled = true;
+        submit.textContent = "Sending your code…";
+        var payload = Object.assign({}, pending.values, { verifyVia: channel === "phone" ? "phone" : undefined });
+        return window.NafumeAPI.register(payload).then(function (res) {
+          submit.disabled = !agree.checked;
+          submit.textContent = "Create account";
+          if (!res.ok) {
+            if (res.data && res.data.error === "account_exists") {
+              form.style.display = "block";
+              verifyForm.style.display = "none";
+              showStatus(res.message + ' <a href="account.html">Sign in instead</a>.', "error", true);
+              return;
+            }
+            if (res.fields) { form.style.display = "block"; verifyForm.style.display = "none"; showFieldErrors(res.fields); }
+            showStatus(res.message || "We couldn't send your code. Please try again.", "error");
+            return;
+          }
+          showVerifyStep(res.data);
+        });
+      }
+
       form.addEventListener("submit", function (e) {
         e.preventDefault();
         if (!agree.checked) return;
@@ -359,43 +438,83 @@
           return;
         }
 
-        submit.disabled = true;
-        submit.textContent = "Creating your account…";
+        pending.values = check.values;
+        sendCode("email");
+      });
 
-        window.NafumeAPI.register(check.values).then(function (res) {
-          submit.disabled = false;
-          submit.textContent = "Create account";
+      verifyForm.addEventListener("submit", function (e) {
+        e.preventDefault();
+        var code = codeInput.value.replace(/\D/g, "");
+        el("err-code").textContent = "";
+        if (code.length !== 6) { el("err-code").textContent = "Please enter the 6-digit code."; return; }
+
+        verifySubmit.disabled = true;
+        verifySubmit.textContent = "Checking…";
+
+        window.NafumeAPI.verifyAccount(pending.challengeId, code).then(function (res) {
+          verifySubmit.disabled = false;
+          verifySubmit.textContent = "Verify & create account";
 
           if (!res.ok) {
             if (res.data && res.data.error === "account_exists") {
-              showStatus(
-                res.message + ' <a href="account.html">Sign in instead</a>.',
-                "error", true);
+              showStatus(res.message + ' <a href="account.html">Sign in instead</a>.', "error", true);
               return;
             }
-            if (res.fields) showFieldErrors(res.fields);
-            showStatus(res.message || "We couldn't create your account. Please try again.", "error");
+            var gone = res.data && (res.data.error === "challenge_expired" || res.data.error === "challenge_used" ||
+                                    res.data.error === "too_many_attempts");
+            el("err-code").textContent = res.message || "That code didn't work. Please try again.";
+            if (gone) resendBtn.disabled = false;
             return;
           }
 
+          clearInterval(resendTimer);
           window.NafumeAPI.clearAccountPrefill();
-          form.style.display = "none";
+          verifyForm.style.display = "none";
+          var notes = (res.data.notes || []).map(function (n) { return " " + n; }).join("");
           showStatus(
             "Your account is ready" +
             (res.data.orderCount ? " — " + res.data.orderCount + " order" +
-              (res.data.orderCount === 1 ? " is" : "s are") + " already linked to it." : ".") +
-            ' <a href="account.html">Go to your account</a>.',
+              (res.data.orderCount === 1 ? " is" : "s are") + " linked to it." : ".") +
+            notes + ' <a href="account.html">Go to your account</a>.',
             "success", true);
 
           try {
             if (window.OperationsService) {
               window.OperationsService.recordAnalyticsEvent("account_created",
-                { fromOrder: params.get("from") === "order" });
+                { fromOrder: params.get("from") === "order", verifiedBy: pending.channel });
             }
           } catch (e2) {}
 
           setTimeout(function () { window.location.href = "account.html"; }, 2200);
         });
+      });
+
+      resendBtn.addEventListener("click", function () {
+        if (!pending.challengeId) return;
+        resendBtn.disabled = true;
+        window.NafumeAPI.resendCode(pending.challengeId, "account_register").then(function (res) {
+          if (!res.ok) {
+            // The challenge is finished or retired — start a fresh one.
+            if (res.data && (res.data.error === "challenge_expired" || res.data.error === "too_many_sends")) {
+              sendCode(pending.channel);
+              return;
+            }
+            el("err-code").textContent = res.message || "We couldn't send a new code yet.";
+            startResendCountdown((res.data && res.data.retryAfterSeconds) || 30);
+            return;
+          }
+          el("err-code").textContent = "";
+          showStatus(res.data.message || "A new code is on its way.", "info");
+          startResendCountdown(res.data.resendAfterSeconds || 30);
+        });
+      });
+
+      el("reg-use-sms").addEventListener("click", function () { sendCode("phone"); });
+      el("reg-back").addEventListener("click", function () {
+        clearInterval(resendTimer);
+        verifyForm.style.display = "none";
+        form.style.display = "block";
+        clearStatus();
       });
 
       applyPrefill();

@@ -21,8 +21,9 @@
    Public API (window.NafumeAPI)
      request(path, options)
      get(path) / post(path, body)
-     lookupOrder(orderId, contact)
-     me() / login() / register() / logout() / updateAccount()
+     lookupOrder(orderId, contact, { refreshPayment })
+     me() / login() / register() / verifyAccount() / resendCode() / logout() / updateAccount()
+     startIdentifierVerification() / confirmIdentifierVerification()
      subscribeLead(email, meta)
      quizQuestions() / quizRecommend(answers) / quizSubmit(email, answers)
      reviewEligibility(orderId, contact) / submitReview(payload)
@@ -162,10 +163,14 @@
 
   /* ── orders ───────────────────────────────────────────────────────────── */
 
-  function lookupOrder(orderId, contact) {
+  /* lookupOrder(orderId, contact, { refreshPayment })
+     refreshPayment asks the server to re-check an online payment that is still
+     being confirmed (used by the confirmation page while it waits). */
+  function lookupOrder(orderId, contact, opts) {
     return post("/api/orders/lookup", {
       orderId: orderId,
-      contact: contact || recallCheckoutContact(orderId) || ""
+      contact: contact || recallCheckoutContact(orderId) || "",
+      refreshPayment: !!(opts && opts.refreshPayment)
     });
   }
 
@@ -227,7 +232,20 @@
 
   function me()                        { return get("/api/account/me"); }
   function login(identifier, password) { return post("/api/account/login", { identifier: identifier, password: password }); }
+  /* register() only sends a code; verifyAccount() finishes the account. */
   function register(payload)           { return post("/api/account/register", payload); }
+  function verifyAccount(challengeId, code) {
+    return post("/api/account/verify", { challengeId: challengeId, code: code });
+  }
+  function resendCode(challengeId, purpose) {
+    return post("/api/account/resend-code", { challengeId: challengeId, purpose: purpose || "account_register" });
+  }
+  function startIdentifierVerification(channel, value) {
+    return post("/api/account/identifiers", { action: "start", channel: channel, value: value });
+  }
+  function confirmIdentifierVerification(challengeId, code) {
+    return post("/api/account/identifiers", { action: "confirm", challengeId: challengeId, code: code });
+  }
   function logout()                    { return post("/api/account/logout", {}); }
   function updateAccount(payload)      { return post("/api/account/update", payload); }
 
@@ -241,10 +259,10 @@
   function quizSubmit(email, answers, optIn) {
     return post("/api/quiz/submit", { email: email, answers: answers, marketingOptIn: optIn === true });
   }
-  function reviewEligibility(orderId, contact) {
-    return post("/api/reviews/eligibility", {
-      orderId: orderId, contact: contact || recallCheckoutContact(orderId) || ""
-    });
+  /* token = the review link token from the review-request email. A signed-in
+     owner needs none (the session cookie travels with the request). */
+  function reviewEligibility(orderId, token) {
+    return post("/api/reviews/eligibility", { orderId: orderId, token: token || "" });
   }
   function submitReview(payload)    { return post("/api/reviews/submit", payload); }
   function productReviews(productId) {
@@ -255,6 +273,9 @@
     request: request, get: get, post: post,
     lookupOrder: lookupOrder, toLocalOrder: toLocalOrder,
     me: me, login: login, register: register, logout: logout, updateAccount: updateAccount,
+    verifyAccount: verifyAccount, resendCode: resendCode,
+    startIdentifierVerification: startIdentifierVerification,
+    confirmIdentifierVerification: confirmIdentifierVerification,
     subscribeLead: subscribeLead,
     quizQuestions: quizQuestions, quizRecommend: quizRecommend, quizSubmit: quizSubmit,
     reviewEligibility: reviewEligibility, submitReview: submitReview, productReviews: productReviews,

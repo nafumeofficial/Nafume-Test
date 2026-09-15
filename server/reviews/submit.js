@@ -1,7 +1,12 @@
 ﻿/*
  * POST /api/reviews/submit  —  post-delivery review
  * ============================================================================
- * Body: { orderId, contact?, productId, rating, title?, body?, photo? }
+ * Body: { orderId, token?, productId, rating, title?, body?, photo? }
+ *
+ * ACCESS + ELIGIBILITY: api/_lib/review-access.js — the order's verified owner
+ * (session) or the review-link token from the review-request email, and the
+ * order must be paid and DELIVERED. Nothing is inserted and no reward is shown
+ * unless every check passes.
  *
  * DUPLICATES: reviews has UNIQUE(order_id, product_id). Opening the form twice,
  * double-clicking submit, or replaying the request all resolve to the same
@@ -49,6 +54,17 @@ module.exports = async function handler(req, res) {
   const order = found.order;
   const items = found.items;
 
+  /* ── eligibility first: paid, delivered, not cancelled ────────────────── */
+  let state;
+  try {
+    state = await access.reviewableProducts(order, items);
+  } catch (err) {
+    return http.handleError(res, err, "reviews/submit");
+  }
+  if (!state.eligible && state.reason !== "already_reviewed") {
+    return http.fail(res, 403, state.reason, state.message);
+  }
+
   /* ── field validation ─────────────────────────────────────────────────── */
   const e = validate.collector();
 
@@ -74,12 +90,7 @@ module.exports = async function handler(req, res) {
     return http.fail(res, 400, "invalid_input", e.first(), { fields: e.errors });
   }
 
-  /* ── eligibility ──────────────────────────────────────────────────────── */
   try {
-    const state = await access.reviewableProducts(order, items);
-    if (!state.eligible && state.reason === "not_paid") {
-      return http.fail(res, 403, "not_paid", state.message);
-    }
     const target = state.products.find(function (p) { return p.productId === productId; });
     if (target && target.reviewed) {
       return http.fail(res, 409, "already_reviewed",
@@ -101,7 +112,8 @@ module.exports = async function handler(req, res) {
       photo_data_url: photo.value,
       author_name:    order.ship_name || null,
       author_email:   order.ship_email || null,
-      verified:       true,          // tied to a real paid order
+      verified:       true,          // tied to a real paid, delivered order
+      access_method:  found.via,     // session | review_link
       status:         "pending",     // published only after moderation
       created_at:     now,
       updated_at:     now
@@ -134,7 +146,11 @@ module.exports = async function handler(req, res) {
       reward:   {
         code:  catalog.REVIEW_OFFER.code,
         label: catalog.REVIEW_OFFER.label,
-        terms: catalog.REVIEW_OFFER.terms
+        terms: catalog.REVIEW_OFFER.terms,
+        // The code is redeemed against the account that owns this order.
+        howToUse: found.via === "session"
+          ? "Use it at checkout while signed in to this account."
+          : "To use it, sign in (or create your account) with the email or phone used for this order, then apply it at checkout."
       },
       message: "Thank you — your review has been received and will appear once approved."
     });

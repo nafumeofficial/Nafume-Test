@@ -12,11 +12,14 @@
 "use strict";
 
 const ROUTES = Object.freeze({
+  "/account/identifiers":        require("../server/account/identifiers"),
   "/account/login":              require("../server/account/login"),
   "/account/logout":             require("../server/account/logout"),
   "/account/me":                 require("../server/account/me"),
   "/account/register":           require("../server/account/register"),
+  "/account/resend-code":        require("../server/account/resend-code"),
   "/account/update":             require("../server/account/update"),
+  "/account/verify":             require("../server/account/verify"),
   "/admin/orders":               require("../server/admin/orders"),
   "/admin/reviews":              require("../server/admin/reviews"),
   "/discounts/validate":         require("../server/discounts/validate"),

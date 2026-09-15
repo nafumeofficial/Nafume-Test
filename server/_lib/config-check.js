@@ -44,8 +44,14 @@ const OPTIONAL = [
     withoutIt: "Both jobs refuse to run rather than exposing an open endpoint." },
   { name: "SITE_URL",                unlocks: "Absolute links inside emails.",
     withoutIt: "Review-request links in emails will not be clickable." },
-  { name: "MSG91_AUTH_KEY",          unlocks: "One-time-code sign-in by phone.",
-    withoutIt: "Password sign-in still works; the OTP option reports it is unavailable." },
+  { name: "ORDER_NOTIFY_EMAIL_FROM", unlocks: "A verified sender for internal order and payment alerts.",
+    withoutIt: "Falls back to Resend's sandbox sender, which only reaches the Resend account owner." },
+  { name: "MSG91_AUTH_KEY",          unlocks: "One-time-code sign-in and phone verification by SMS.",
+    withoutIt: "Password sign-in and email verification still work; SMS codes report they are unavailable." },
+  { name: "MSG91_TEMPLATE_ID",       unlocks: "The DLT-approved SMS template MSG91 needs to send codes.",
+    withoutIt: "SMS codes cannot be sent even with MSG91_AUTH_KEY set." },
+  { name: "VERIFICATION_SECRET",     unlocks: "A dedicated key for hashing stored email verification codes.",
+    withoutIt: "A key derived from SUPABASE_SERVICE_ROLE_KEY is used instead (rotating that key invalidates codes in flight)." },
   { name: "INSTAGRAM_ACCESS_TOKEN",  unlocks: "Live Instagram feed on the homepage.",
     withoutIt: "The feed falls back to bundled product images." }
 ];
@@ -69,15 +75,20 @@ function inspect() {
   const driver = db.driverName();
   const driverIsProductionSafe = driver === "supabase";
 
+  const memoryRefused = db.memoryDriverRefused();
+
   return {
     ok: missingRequired.length === 0 && driverIsProductionSafe,
     storage: {
       driver: driver,
       configured: db.isConfigured(),
       productionSafe: driverIsProductionSafe,
+      memoryRefused: memoryRefused,
       warning: driver === "memory"
         ? "NAFUME_DB_DRIVER=memory is set. Data is per-instance and is LOST on redeploy. Never use this in production."
-        : (driver === "none" ? "No storage driver is configured. Checkout will refuse orders." : null)
+        : memoryRefused
+          ? "NAFUME_DB_DRIVER=memory was refused on this hosted deployment. Remove it and configure Supabase."
+          : (driver === "none" ? "No storage driver is configured. Checkout will refuse orders." : null)
     },
     required: required,
     optional: optional,
@@ -89,8 +100,10 @@ function inspect() {
       cashOnDelivery:     db.isConfigured(),
       paymentRecovery:    present("RAZORPAY_WEBHOOK_SECRET"),
       sendsEmail:         present("RESEND_API_KEY"),
-      sendsWhatsApp:      false,     // no provider is integrated — see api/_lib/messaging.js
-      otpLogin:           present("MSG91_AUTH_KEY"),
+      emailVerification:  present("RESEND_API_KEY"),
+      sendsWhatsApp:      require("./messaging").whatsappConfigured(),   // launch gate — see _lib/messaging.js
+      whatsappReadiness:  require("./messaging").whatsappReadiness(),
+      otpLogin:           present("MSG91_AUTH_KEY") && present("MSG91_TEMPLATE_ID"),
       adminApi:           present("ADMIN_API_TOKEN"),
       scheduledJobs:      present("CRON_SECRET") || present("ADMIN_API_TOKEN")
     }

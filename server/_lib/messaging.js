@@ -22,12 +22,20 @@
 
 const db = require("./db");
 
-const RESEND_API_KEY = process.env.RESEND_API_KEY;
 const NOTIFY_TO      = process.env.ORDER_NOTIFY_EMAIL_TO   || "nafume.official@gmail.com";
 const NOTIFY_FROM    = process.env.ORDER_NOTIFY_EMAIL_FROM || "NAFUME Orders <onboarding@resend.dev>";
 const CUSTOMER_FROM  = process.env.CUSTOMER_EMAIL_FROM     || NOTIFY_FROM;
 
-function emailConfigured()    { return !!RESEND_API_KEY; }
+/* Read at call time so a key added to the environment is honoured by warm
+   instances and by the test harness without a reload. */
+function resendKey()          { return process.env.RESEND_API_KEY; }
+function emailConfigured()    { return !!resendKey(); }
+
+/* Messages whose body must never be stored (verification codes). The outbox
+   row keeps the recipient, subject and outcome, with the body redacted, and
+   the drain job never retries them — a code that failed to send is simply
+   requested again. */
+const REDACTED_BODY = "[redacted: contained a one-time verification code]";
 
 /* ── WhatsApp adapter ────────────────────────────────────────────────────────
    No provider is integrated, and none is faked. This is the seam one goes in.
@@ -52,10 +60,35 @@ function emailConfigured()    { return !!RESEND_API_KEY; }
    whatsapp_broadcast_audience view (see db/schema.sql), never from the orders
    table.                                                                     */
 
+/* LAUNCH GATE — all of these must be true before a WhatsApp message is sent:
+     1. a provider adapter is implemented in sendViaWhatsAppProvider()
+        (WHATSAPP_ADAPTER_IMPLEMENTED below — code, not configuration),
+     2. its credentials are set,
+     3. the templates are approved by Meta and their names configured,
+     4. WHATSAPP_SENDING_ENABLED=true is set deliberately at launch.
+   Until then nothing is sent AND nothing is queued, so enabling it later can
+   never release a backlog of stale "your order shipped" messages.          */
+const WHATSAPP_ADAPTER_IMPLEMENTED = false;
+
+const WHATSAPP_TEMPLATE_VARS = [
+  "WHATSAPP_TEMPLATE_ORDER_CONFIRMED",
+  "WHATSAPP_TEMPLATE_ORDER_SHIPPED",
+  "WHATSAPP_TEMPLATE_ORDER_DELIVERED"
+];
+
+function whatsappReadiness() {
+  const has = function (n) { return String(process.env[n] || "").trim().length > 0; };
+  return {
+    adapterImplemented: WHATSAPP_ADAPTER_IMPLEMENTED,
+    providerCredentials: has("WHATSAPP_PROVIDER") && has("WHATSAPP_API_KEY") && has("WHATSAPP_SENDER_NUMBER"),
+    templatesConfigured: WHATSAPP_TEMPLATE_VARS.every(has),
+    sendingEnabled: String(process.env.WHATSAPP_SENDING_ENABLED || "").trim() === "true"
+  };
+}
+
 function whatsappConfigured() {
-  // No provider credentials exist in this repo. Returning false keeps every
-  // WhatsApp message honestly 'queued' instead of claiming a delivery.
-  return false;
+  const r = whatsappReadiness();
+  return r.adapterImplemented && r.providerCredentials && r.templatesConfigured && r.sendingEnabled;
 }
 
 async function sendViaWhatsAppProvider(/* to, body, kind */) {
@@ -98,6 +131,11 @@ async function sendWhatsApp(msg) {
       // Not an error — the correct outcome for someone who did not opt in.
       return { queued: false, sent: false, reason: "no_marketing_consent" };
     }
+  }
+
+  if (!whatsappConfigured()) {
+    // Disabled: record nothing, so no stale backlog exists at launch.
+    return { queued: false, sent: false, reason: "whatsapp_sending_disabled" };
   }
 
   return send({
@@ -159,7 +197,7 @@ async function queue(msg) {
     channel:             msg.channel === "whatsapp" ? "whatsapp" : "email",
     to_address:          to || "",
     subject:             msg.subject || null,
-    body:                msg.body || null,
+    body:                msg.sensitive ? REDACTED_BODY : (msg.body || null),
     status:              "queued",
     provider:            null,
     provider_message_id: null,
@@ -192,16 +230,20 @@ async function markFailed(id, reason) {
 
 /* ── Resend ──────────────────────────────────────────────────────────────── */
 
-async function sendViaResend(to, subject, html, from) {
+async function sendViaResend(to, subject, html, from, idempotencyKey) {
   const ctrl  = new AbortController();
   const timer = setTimeout(function () { ctrl.abort(); }, 8000);
   try {
+    const headers = {
+      "Content-Type":  "application/json",
+      "Authorization": "Bearer " + resendKey()
+    };
+    // Resend de-duplicates a repeated key for 24 hours, so a retried send of the
+    // same outbox row cannot deliver twice.
+    if (idempotencyKey) headers["Idempotency-Key"] = String(idempotencyKey).slice(0, 256);
     const resp = await fetch("https://api.resend.com/emails", {
       method: "POST",
-      headers: {
-        "Content-Type":  "application/json",
-        "Authorization": "Bearer " + RESEND_API_KEY
-      },
+      headers: headers,
       body: JSON.stringify({ from: from || CUSTOMER_FROM, to: [to], subject: subject, html: html }),
       signal: ctrl.signal
     });
@@ -280,13 +322,14 @@ async function send(msg) {
     return { queued: true, sent: false, reason: "email_provider_not_configured", id: row.id };
   }
 
-  const result = await sendViaResend(row.to_address, row.subject, row.body, msg.from);
+  const result = await sendViaResend(row.to_address, row.subject, msg.body, msg.from, "nafume-outbox-" + row.id);
   try {
     if (result.sent) await markSent(row.id, "resend", result.id);
     else await markFailed(row.id, result.error);
   } catch (_) { /* the send outcome matters more than the bookkeeping */ }
 
-  return { queued: true, sent: result.sent, reason: result.sent ? null : result.error, id: row.id };
+  return { queued: true, sent: result.sent, reason: result.sent ? null : result.error, id: row.id,
+           providerMessageId: result.id || null };
 }
 
 /* deliverQueuedRow(row)
@@ -295,6 +338,7 @@ async function send(msg) {
    failed a transient provider error. Never throws. */
 async function deliverQueuedRow(row) {
   if (!row || !row.to_address) return { sent: false, reason: "invalid_recipient" };
+  if (row.body === REDACTED_BODY) return { sent: false, reason: "not_retryable" };
 
   if (row.channel === "whatsapp") {
     if (!whatsappConfigured()) return { sent: false, reason: "whatsapp_provider_not_configured" };
@@ -308,7 +352,10 @@ async function deliverQueuedRow(row) {
 
   if (!emailConfigured()) return { sent: false, reason: "email_provider_not_configured" };
 
-  const result = await sendViaResend(row.to_address, row.subject, row.body, null);
+  // Same key as the first attempt: if that attempt was actually accepted but
+  // timed out on our side, Resend returns the original result instead of
+  // sending a second copy.
+  const result = await sendViaResend(row.to_address, row.subject, row.body, null, "nafume-outbox-" + row.id);
   try {
     if (result.sent) await markSent(row.id, "resend", result.id);
     else await markFailed(row.id, result.error);
@@ -405,6 +452,18 @@ function quizResultEmail(result) {
   );
 }
 
+function verificationCodeEmail(code, purposeLabel, minutes) {
+  return BRAND_WRAP(
+    '<h2 style="color:#111;">Your NAFUME verification code</h2>' +
+    '<p style="font-size:14px;">Use this code to ' + escapeHtml(purposeLabel) + ':</p>' +
+    '<p style="font-size:28px;letter-spacing:.3em;font-weight:bold;background:#faf6ef;' +
+    'padding:16px;text-align:center;border:1px dashed #C5A059;">' + escapeHtml(code) + '</p>' +
+    '<p style="font-size:13px;color:#555;">It expires in ' + escapeHtml(minutes) + ' minutes and can be used once.</p>' +
+    '<p style="font-size:12px;color:#888;">If you did not ask for this, ignore this email — nothing changes ' +
+    'without the code. NAFUME will never ask you to share it.</p>'
+  );
+}
+
 function reviewRequestEmail(order, reviewUrl) {
   return BRAND_WRAP(
     '<h2 style="color:#111;">How is your NAFUME fragrance?</h2>' +
@@ -420,8 +479,9 @@ function reviewRequestEmail(order, reviewUrl) {
 module.exports = {
   send, queue, deliverQueuedRow, escapeHtml, money,
   sendWhatsApp, hasWhatsAppMarketingConsent,
-  emailConfigured, whatsappConfigured,
+  emailConfigured, whatsappConfigured, whatsappReadiness,
   NOTIFY_TO, NOTIFY_FROM, CUSTOMER_FROM,
   orderPaidTeamEmail, orderPaidCustomerEmail,
-  leadDiscountEmail, quizResultEmail, reviewRequestEmail
+  leadDiscountEmail, quizResultEmail, reviewRequestEmail, verificationCodeEmail,
+  REDACTED_BODY
 };

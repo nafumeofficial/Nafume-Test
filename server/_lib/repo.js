@@ -2,12 +2,22 @@
  * api/_lib/repo.js  —  domain data access (customers, orders, consent, reviews)
  * ============================================================================
  * All multi-step database work lives here so endpoints stay thin and the same
- * rules (customer de-duplication, order idempotency, safe projections) apply
- * everywhere.
+ * rules (customer de-duplication, order ownership, order idempotency, safe
+ * projections) apply everywhere.
+ *
+ * OWNERSHIP MODEL
+ *   A customer row is matched from whatever a shopper TYPES at checkout, so
+ *   `orders.customer_id` is a bookkeeping link, not proof of anything. The only
+ *   thing that lets a signed-in customer see an order is
+ *   `orders.verified_owner_customer_id`, which is set when:
+ *     - the order was placed from that customer's authenticated session, or
+ *     - the customer proved control of the email/phone the order was placed
+ *       with (verification code), see linkOwnedOrders().
  */
 "use strict";
 
-const db = require("./db");
+const db       = require("./db");
+const validate = require("./validate");
 
 /* ── customers ───────────────────────────────────────────────────────────────
    Repeat-customer matching, in priority order:
@@ -17,29 +27,28 @@ const db = require("./db");
    to create the same customer resolve to one row: the loser catches the unique
    violation and re-reads the winner's row.                                    */
 
+/* isClaimed(customer) — has anyone proven control of this record? A claimed
+   record (an account, or any verified identifier) is never modified by an
+   unauthenticated checkout: typed details cannot rewrite someone's profile. */
+function isClaimed(c) {
+  return !!(c && (c.has_account || c.email_verified_at || c.phone_verified_at));
+}
+
 /* mergeMissing(existing, incoming)
-   Fills blanks on an existing customer without ever clobbering good data with
-   empty data. Address and name ARE refreshed when the new order supplies them,
-   because the newest checkout is the most current address the customer has. */
+   Refreshes the profile of an UNCLAIMED guest record from its newest checkout.
+   Identifiers are never filled in or overwritten here: attaching a typed email
+   or phone to an existing record is how one person's details used to end up on
+   another person's record. */
 function mergeMissing(existing, incoming) {
   const patch = {};
-  const refreshable = ["name", "address_line1", "address_line2", "city", "state", "pincode"];
+  if (isClaimed(existing)) return patch;
 
-  refreshable.forEach(function (col) {
+  ["name", "address_line1", "address_line2", "city", "state", "pincode"].forEach(function (col) {
     const v = incoming[col];
     if (v !== undefined && v !== null && String(v).trim() !== "" && v !== existing[col]) {
       patch[col] = v;
     }
   });
-
-  // Identifiers are only ever FILLED IN, never overwritten — overwriting could
-  // silently move a person's login identity or collide with another row.
-  ["email", "email_normalized", "phone", "phone_normalized"].forEach(function (col) {
-    const v = incoming[col];
-    if (v && !existing[col]) patch[col] = v;
-  });
-
-  if (incoming.has_account === true && !existing.has_account) patch.has_account = true;
 
   if (Object.keys(patch).length) patch.updated_at = db.nowISO();
   return patch;
@@ -58,8 +67,20 @@ async function findCustomer(emailNormalized, phoneNormalized) {
   return null;
 }
 
+async function getCustomerById(id) {
+  if (!id) return null;
+  return db.selectOne("customers", { id: id });
+}
+
+async function hasCredentials(customerId) {
+  if (!customerId) return false;
+  return !!(await db.selectOne("customer_auth", { customer_id: customerId }));
+}
+
 /* findOrCreateCustomer(input) -> { customer, created }
-   `input` uses the normalized shape produced by validate.validateShipping(). */
+   `input` uses the normalized shape produced by validate.validateShipping().
+   Used for GUEST checkout only — a signed-in checkout uses the session's own
+   customer and never matches by typed details. */
 async function findOrCreateCustomer(input) {
   input = input || {};
   const emailNorm = input.emailNormalized || null;
@@ -81,21 +102,6 @@ async function findOrCreateCustomer(input) {
 
   const existing = await findCustomer(emailNorm, phoneNorm);
   if (existing) {
-    // Don't attach an identifier that already belongs to a DIFFERENT customer —
-    // that write would violate the unique index and isn't ours to make.
-    if (incoming.phone_normalized && !existing.phone_normalized) {
-      const clash = await db.selectOne("customers", { phone_normalized: incoming.phone_normalized });
-      if (clash && clash.id !== existing.id) {
-        incoming.phone = null; incoming.phone_normalized = null;
-      }
-    }
-    if (incoming.email_normalized && !existing.email_normalized) {
-      const clash = await db.selectOne("customers", { email_normalized: incoming.email_normalized });
-      if (clash && clash.id !== existing.id) {
-        incoming.email = null; incoming.email_normalized = null;
-      }
-    }
-
     const patch = mergeMissing(existing, incoming);
     if (Object.keys(patch).length) {
       const updated = await db.update("customers", { where: { id: existing.id }, set: patch });
@@ -106,11 +112,13 @@ async function findOrCreateCustomer(input) {
 
   const now = db.nowISO();
   const row = Object.assign({
-    id:         db.newId(),
-    country:    "India",
-    source:     input.source || "checkout",
-    created_at: now,
-    updated_at: now
+    id:                db.newId(),
+    country:           "India",
+    source:            input.source || "checkout",
+    email_verified_at: null,
+    phone_verified_at: null,
+    created_at:        now,
+    updated_at:        now
   }, incoming);
 
   try {
@@ -191,8 +199,26 @@ async function getConsent(customerId, channel) {
 
 function generateOrderId() {
   // NF-<8 time digits>-<3 random> — 40-char-safe for Razorpay's receipt field.
-  const rand = String(Math.floor(100 + Math.random() * 900));
+  const rand = String(require("crypto").randomInt(100, 1000));
   return "NF-" + Date.now().toString().slice(-8) + "-" + rand;
+}
+
+/* ownerAtCreation(customer, shipping, sessionCustomerId)
+   Who may see a brand-new order from their account, decided when it is
+   written:
+     - a signed-in checkout belongs to the session's customer;
+     - a guest checkout belongs to a customer only if that customer has ALREADY
+       verified the exact email or phone typed on the order;
+     - otherwise nobody yet — it becomes claimable by whoever later proves
+       control of the order's email or phone. */
+function ownerAtCreation(customer, shipping, sessionCustomerId) {
+  if (sessionCustomerId) return sessionCustomerId;
+  if (!customer) return null;
+  if (customer.email_verified_at && shipping.emailNormalized &&
+      customer.email_normalized === shipping.emailNormalized) return customer.id;
+  if (customer.phone_verified_at && shipping.phoneNormalized &&
+      customer.phone_normalized === shipping.phoneNormalized) return customer.id;
+  return null;
 }
 
 /* createPendingOrder({ orderId, customer, shipping, lines, totals, ... })
@@ -208,10 +234,18 @@ async function createPendingOrder(input) {
     id:                      db.newId(),
     order_id:                input.orderId,
     customer_id:             input.customerId || null,
+    placed_by_customer_id:   input.placedByCustomerId || null,
+    verified_owner_customer_id: input.verifiedOwnerCustomerId || null,
 
     razorpay_order_id:       input.razorpayOrderId || null,
     razorpay_payment_id:     null,
     razorpay_signature:      null,
+    pending_payment_id:      null,
+    payment_captured_amount: null,
+    payment_currency:        null,
+    payment_confirmed_via:   null,
+    payment_checked_at:      null,
+    payment_note:            null,
 
     currency:                "INR",
     amount_subtotal:         t.subtotal,
@@ -232,6 +266,7 @@ async function createPendingOrder(input) {
     ship_name:               s.name,
     ship_phone:              s.phone,
     ship_email:              s.email,
+    ship_email_normalized:   s.emailNormalized || validate.normalizeEmail(s.email) || null,
     ship_line1:              s.line1,
     ship_line2:              s.line2 || null,
     ship_city:               s.city,
@@ -295,34 +330,61 @@ async function getOrderItems(orderUuid) {
   return db.select("order_items", { where: { order_uuid: orderUuid }, order: { column: "created_at", ascending: true } });
 }
 
+const OPEN_PAYMENT_STATES = ["pending", "awaiting_verification"];
+
 /* markOrderPaid(order, payment) -> { order, alreadyPaid }
-   IDEMPOTENT. The update is conditional on the row still being `pending`, so a
-   duplicate verification callback updates zero rows and returns the existing
-   paid order untouched. razorpay_payment_id is UNIQUE at the database level as
-   the second line of defence. */
+   The ONLY function that moves an online order to paid. Callers must already
+   have confirmed with Razorpay that `payment` is CAPTURED, belongs to this
+   order, and matches its amount and currency (see _lib/payments.js).
+
+   IDEMPOTENT AT THE DATABASE LEVEL. The update is a single conditional
+   statement — WHERE payment_status IN ('pending','awaiting_verification') — so
+   concurrent callers (browser callback, webhook, reconciliation, status
+   refresh) cannot both win: exactly one updates the row, the rest update zero
+   rows and re-read it. razorpay_payment_id is UNIQUE as a second line of
+   defence. A paid order is never moved back by this path. */
 async function markOrderPaid(order, payment) {
   if (order.payment_status === "paid") {
     return { order: order, alreadyPaid: true };
   }
 
   const now = db.nowISO();
-  const updated = await db.update("orders", {
-    where: { id: order.id, payment_status: "pending" },
-    set: {
-      payment_status:      "paid",
-      order_status:        "confirmed",
-      razorpay_payment_id: payment.paymentId,
-      razorpay_order_id:   payment.razorpayOrderId || order.razorpay_order_id,
-      razorpay_signature:  payment.signature || null,
-      paid_at:             now,
-      updated_at:          now
+  let updated;
+  try {
+    updated = await db.update("orders", {
+      where: { id: order.id, payment_status: ["in", OPEN_PAYMENT_STATES] },
+      set: {
+        payment_status:          "paid",
+        // A cancelled order that is paid anyway stays cancelled — staff decide
+        // whether to refund or reinstate it. It is still recorded as paid,
+        // because the money is real.
+        order_status:            order.order_status === "cancelled" ? "cancelled" : "confirmed",
+        razorpay_payment_id:     payment.paymentId,
+        razorpay_order_id:       payment.razorpayOrderId || order.razorpay_order_id,
+        razorpay_signature:      payment.signature || null,
+        pending_payment_id:      null,
+        payment_captured_amount: payment.amount != null ? Number(payment.amount) : null,
+        payment_currency:        payment.currency || null,
+        payment_confirmed_via:   payment.via || null,
+        payment_checked_at:      now,
+        payment_note:            null,
+        paid_at:                 now,
+        updated_at:              now
+      }
+    });
+  } catch (err) {
+    // The payment id is already attached to a (different or same) order row.
+    if (err instanceof db.UniqueViolationError) {
+      const fresh = await db.selectOne("orders", { id: order.id });
+      return { order: fresh || order, alreadyPaid: !!(fresh && fresh.payment_status === "paid") };
     }
-  });
+    throw err;
+  }
 
   if (updated && updated.length) {
     // Commit any promo redemption on this order now that the money is real.
-    // Required here (not at the call sites) so BOTH the browser callback and
-    // the webhook commit it, and neither can forget.
+    // Required here (not at the call sites) so every confirmation path commits
+    // it, and only the single winner does.
     try {
       await require("./discounts").markRedeemed(updated[0].order_id);
     } catch (e) {
@@ -336,6 +398,59 @@ async function markOrderPaid(order, payment) {
   return { order: fresh || order, alreadyPaid: true };
 }
 
+/* markAwaitingVerification(order, info) -> order
+   The customer reported a payment (valid checkout signature) that we could not
+   yet confirm as captured — the lookup failed, timed out, or Razorpay still
+   says `authorized`. Conditional on the order still being open, so this can
+   never move a paid order backwards. */
+async function markAwaitingVerification(order, info) {
+  info = info || {};
+  const now = db.nowISO();
+  const rows = await db.update("orders", {
+    where: { id: order.id, payment_status: ["in", OPEN_PAYMENT_STATES] },
+    set: {
+      payment_status:     "awaiting_verification",
+      pending_payment_id: info.paymentId || order.pending_payment_id || null,
+      payment_checked_at: now,
+      payment_note:       info.note ? String(info.note).slice(0, 200) : null,
+      updated_at:         now
+    }
+  });
+  if (rows && rows.length) return rows[0];
+  return (await db.selectOne("orders", { id: order.id })) || order;
+}
+
+/* noteFailedPayment(order, note) — an attempt Razorpay reports as failed.
+   Only an order that was waiting on confirmation moves to `failed`; a plain
+   pending order (customer may simply retry) is left alone. */
+async function noteFailedPayment(order, note) {
+  const now = db.nowISO();
+  const rows = await db.update("orders", {
+    where: { id: order.id, payment_status: "awaiting_verification" },
+    set: { payment_status: "failed", payment_checked_at: now,
+           payment_note: note ? String(note).slice(0, 200) : null, updated_at: now }
+  });
+  return rows && rows.length ? rows[0] : order;
+}
+
+/* ── order ownership ─────────────────────────────────────────────────────── */
+
+function customerOwnsOrder(customer, order) {
+  return !!(customer && order && order.verified_owner_customer_id &&
+            order.verified_owner_customer_id === customer.id);
+}
+
+/* getOwnedOrders(customerId) — the order history a signed-in customer sees. */
+async function getOwnedOrders(customerId, limit) {
+  if (!customerId) return [];
+  return db.select("orders", {
+    where: { verified_owner_customer_id: customerId },
+    order: { column: "created_at", ascending: false },
+    limit: limit || 50
+  });
+}
+
+/* Kept for internal/admin use. NOT an access check. */
 async function getOrdersForCustomer(customerId, limit) {
   if (!customerId) return [];
   return db.select("orders", {
@@ -345,31 +460,50 @@ async function getOrdersForCustomer(customerId, limit) {
   });
 }
 
-/* attachOrphanOrders(customer)
-   A guest checkout creates the customer row too, so orders are normally linked
-   already. This catches the edge case where an order was written before the
-   customer row existed (or the link was lost) and re-attaches by shipping
-   email/phone at account-creation time. */
-async function attachOrphanOrders(customer) {
+/* linkOwnedOrders(customer) -> number linked
+   Gives a customer the orders placed with an email or phone they have PROVEN
+   they control. Orders that already have a verified owner are never moved:
+   whoever verified first keeps them. Called after every successful
+   verification, and on sign-in to pick up guest orders placed since. */
+async function linkOwnedOrders(customer) {
   if (!customer) return 0;
   let linked = 0;
   const now = db.nowISO();
 
-  if (customer.email_normalized) {
+  if (customer.email_verified_at && customer.email_normalized) {
     const rows = await db.update("orders", {
-      where: { ship_email: customer.email, customer_id: ["is", null] },
-      set:   { customer_id: customer.id, updated_at: now }
+      where: { ship_email_normalized: customer.email_normalized, verified_owner_customer_id: ["is", null] },
+      set:   { verified_owner_customer_id: customer.id, customer_id: customer.id, updated_at: now }
     });
     linked += (rows || []).length;
   }
-  if (customer.phone) {
+  if (customer.phone_verified_at && customer.phone_normalized) {
     const rows = await db.update("orders", {
-      where: { ship_phone: customer.phone, customer_id: ["is", null] },
-      set:   { customer_id: customer.id, updated_at: now }
+      where: { ship_phone: customer.phone_normalized, verified_owner_customer_id: ["is", null] },
+      set:   { verified_owner_customer_id: customer.id, customer_id: customer.id, updated_at: now }
     });
     linked += (rows || []).length;
   }
   return linked;
+}
+
+/* reseedProfileFromOwnedOrders(customer) -> customer
+   When a guest record is claimed, its saved name/address may have come from
+   checkouts that were matched by an identifier the claimant has NOT proven.
+   Replace them with the newest order the claimant actually owns (or clear the
+   address when there is none). */
+async function reseedProfileFromOwnedOrders(customer, preferredName) {
+  const owned = await getOwnedOrders(customer.id, 1);
+  const latest = owned[0] || null;
+  const patch = {
+    name:          preferredName || (latest && latest.ship_name) || customer.name || null,
+    address_line1: latest ? latest.ship_line1 : null,
+    address_line2: latest ? (latest.ship_line2 || null) : null,
+    city:          latest ? latest.ship_city : null,
+    state:         latest ? latest.ship_state : null,
+    pincode:       latest ? latest.ship_pincode : null
+  };
+  return (await updateCustomer(customer.id, patch)) || Object.assign({}, customer, patch);
 }
 
 /* ── safe projections ────────────────────────────────────────────────────────
@@ -383,6 +517,7 @@ function publicOrder(order, items) {
     paidAt:         order.paid_at,
     currency:       order.currency,
     paymentStatus:  order.payment_status,
+    awaitingPaymentConfirmation: order.payment_status === "awaiting_verification",
     orderStatus:    order.order_status,
     fulfillmentStatus: order.fulfillment_status,
     paymentMethod:  order.payment_method,
@@ -430,10 +565,13 @@ function publicOrder(order, items) {
 }
 
 module.exports = {
-  findCustomer, findOrCreateCustomer, updateCustomer,
+  isClaimed, findCustomer, getCustomerById, hasCredentials,
+  findOrCreateCustomer, updateCustomer,
   setMarketingConsent, getConsent,
-  generateOrderId, createPendingOrder,
+  generateOrderId, ownerAtCreation, createPendingOrder,
   getOrderByOrderId, getOrderByRazorpayOrderId, getOrderByPaymentId, getOrderItems,
-  markOrderPaid, getOrdersForCustomer, attachOrphanOrders,
+  OPEN_PAYMENT_STATES, markOrderPaid, markAwaitingVerification, noteFailedPayment,
+  customerOwnsOrder, getOwnedOrders, getOrdersForCustomer, linkOwnedOrders,
+  reseedProfileFromOwnedOrders,
   publicOrder
 };

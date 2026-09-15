@@ -4,9 +4,13 @@
 -- Target: PostgreSQL 14+ (written for Supabase, but plain Postgres works too).
 --
 -- HOW TO APPLY
---   Supabase → your project → SQL Editor → New query → paste this file → Run.
---   The script is idempotent: every statement uses IF NOT EXISTS / DO-blocks, so
---   re-running it is safe and NEVER drops or truncates existing data.
+--   NEW, EMPTY database: Supabase → SQL Editor → New query → paste this file →
+--   Run. It includes every migration in db/migrations/.
+--   EXISTING database that already holds data: do NOT re-run this whole file.
+--   Apply only the migrations in db/migrations/ you have not applied yet (check
+--   the schema_migrations table), after taking a backup.
+--   Every statement is guarded (IF NOT EXISTS / DO-blocks) and nothing here
+--   drops or truncates data.
 --
 -- SECURITY MODEL
 --   Row Level Security is ENABLED on every table and NO policies are created.
@@ -386,6 +390,100 @@ ALTER TABLE orders ADD COLUMN IF NOT EXISTS discount_code   TEXT;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS amount_discount INTEGER NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS orders_discount_code_idx
   ON orders (discount_code) WHERE discount_code IS NOT NULL;
+
+-- ── 20260915_launch_readiness ───────────────────────────────────────────────
+-- Identical to db/migrations/20260915_launch_readiness.sql (kept in step so a
+-- fresh database gets the full schema from this one file).
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS email_verified_at TIMESTAMPTZ;
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS phone_verified_at TIMESTAMPTZ;
+
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS ship_email_normalized      TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS placed_by_customer_id      UUID REFERENCES customers(id) ON DELETE SET NULL;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS verified_owner_customer_id UUID REFERENCES customers(id) ON DELETE SET NULL;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS pending_payment_id         TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_captured_amount    INTEGER;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_currency           TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_confirmed_via      TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_checked_at         TIMESTAMPTZ;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_note               TEXT;
+UPDATE orders SET ship_email_normalized = lower(btrim(ship_email))
+ WHERE ship_email IS NOT NULL AND ship_email_normalized IS NULL;
+CREATE INDEX IF NOT EXISTS orders_ship_email_normalized_idx ON orders (ship_email_normalized);
+CREATE INDEX IF NOT EXISTS orders_verified_owner_idx        ON orders (verified_owner_customer_id);
+CREATE INDEX IF NOT EXISTS orders_payment_open_idx          ON orders (payment_status, created_at)
+  WHERE payment_status IN ('pending', 'awaiting_verification');
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'orders_payment_status_check') THEN
+    ALTER TABLE orders ADD CONSTRAINT orders_payment_status_check
+      CHECK (payment_status IN ('pending', 'awaiting_verification', 'paid', 'failed', 'refunded')) NOT VALID;
+  END IF;
+END $$;
+ALTER TABLE orders VALIDATE CONSTRAINT orders_payment_status_check;
+
+CREATE TABLE IF NOT EXISTS verification_challenges (
+  id              UUID PRIMARY KEY,
+  purpose         TEXT        NOT NULL,
+  channel         TEXT        NOT NULL,
+  identifier      TEXT        NOT NULL,
+  customer_id     UUID        REFERENCES customers(id) ON DELETE CASCADE,
+  payload         JSONB       NOT NULL DEFAULT '{}'::jsonb,
+  code_hash       TEXT,
+  provider        TEXT        NOT NULL,
+  attempts        INTEGER     NOT NULL DEFAULT 0,
+  max_attempts    INTEGER     NOT NULL DEFAULT 5,
+  send_count      INTEGER     NOT NULL DEFAULT 1,
+  last_sent_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at      TIMESTAMPTZ NOT NULL,
+  consumed_at     TIMESTAMPTZ,
+  invalidated_at  TIMESTAMPTZ,
+  live_key        TEXT,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS verification_challenges_live_key
+  ON verification_challenges (live_key) WHERE live_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS verification_challenges_identifier_idx
+  ON verification_challenges (channel, identifier, created_at DESC);
+CREATE INDEX IF NOT EXISTS verification_challenges_expiry_idx
+  ON verification_challenges (expires_at);
+
+CREATE TABLE IF NOT EXISTS payment_events (
+  id                  UUID PRIMARY KEY,
+  event_key           TEXT        NOT NULL,
+  provider            TEXT        NOT NULL DEFAULT 'razorpay',
+  event_type          TEXT,
+  razorpay_payment_id TEXT,
+  razorpay_order_id   TEXT,
+  outcome             TEXT,
+  received_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  processed_at        TIMESTAMPTZ,
+  attempts            INTEGER     NOT NULL DEFAULT 1
+);
+CREATE UNIQUE INDEX IF NOT EXISTS payment_events_event_key ON payment_events (event_key);
+CREATE INDEX IF NOT EXISTS payment_events_payment_idx ON payment_events (razorpay_payment_id);
+
+ALTER TABLE review_requests ADD COLUMN IF NOT EXISTS access_token_hash       TEXT;
+ALTER TABLE review_requests ADD COLUMN IF NOT EXISTS access_token_expires_at TIMESTAMPTZ;
+CREATE UNIQUE INDEX IF NOT EXISTS review_requests_access_token_key
+  ON review_requests (access_token_hash) WHERE access_token_hash IS NOT NULL;
+ALTER TABLE reviews ADD COLUMN IF NOT EXISTS access_method TEXT;
+
+ALTER TABLE discount_redemptions ADD COLUMN IF NOT EXISTS allowance_slot INTEGER;
+ALTER TABLE discount_redemptions ADD COLUMN IF NOT EXISTS slot_key       TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS discount_redemptions_slot_key
+  ON discount_redemptions (slot_key) WHERE slot_key IS NOT NULL;
+
+ALTER TABLE verification_challenges ENABLE ROW LEVEL SECURITY;
+ALTER TABLE payment_events          ENABLE ROW LEVEL SECURITY;
+
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  version    TEXT PRIMARY KEY,
+  applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE schema_migrations ENABLE ROW LEVEL SECURITY;
+INSERT INTO schema_migrations (version) VALUES ('20260915_launch_readiness')
+  ON CONFLICT (version) DO NOTHING;
 
 -- ── Convenience view for marketing exports ──────────────────────────────────
 -- Only opted-in, non-revoked WhatsApp numbers. Use THIS (never the raw orders

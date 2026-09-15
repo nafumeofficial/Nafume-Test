@@ -1,16 +1,23 @@
 /*
  * test/run-tests.js  —  end-to-end API suite for the NAFUME customer-data system
  * ============================================================================
- *   node test/run-tests.js
+ *   node test/run-tests.js                          (through api/index.js)
+ *   NAFUME_TEST_ROUTER=direct node test/run-tests.js (handlers directly)
  *
  * Runs the real handlers from /server against the memory storage driver, with
- * only the external HTTP boundary (Razorpay, Resend) replaced by test/mocks.js.
- * Razorpay signatures are computed with the same HMAC scheme and the same secret
- * the handlers read, so signature verification, tampering and replay are
- * genuinely exercised rather than stubbed.
+ * only the external HTTP boundary (Razorpay, Resend, MSG91) replaced by
+ * test/mocks.js. By default every request goes through api/index.js with
+ * Vercel's Node helpers emulated (see test/server.js), which is how production
+ * receives it. Razorpay signatures are computed with the same HMAC scheme and
+ * the same secret the handlers read, so signature verification, tampering and
+ * replay are genuinely exercised rather than stubbed.
  *
  * Every assertion checks BOTH the HTTP response and the resulting database
  * state — a success message is never accepted as proof of persistence.
+ *
+ * WHAT THIS DOES NOT PROVE: that live Supabase, Razorpay, Resend or MSG91
+ * behave like the mocks. See test/check-live-services.js and the readiness
+ * report for live verification.
  */
 "use strict";
 
@@ -21,7 +28,11 @@ process.env.RESEND_API_KEY      = "re_test_local";
 process.env.ADMIN_API_TOKEN     = "test_admin_token";
 process.env.CRON_SECRET         = "test_cron_secret";
 process.env.SITE_URL            = "https://www.nafume.com";
+process.env.MSG91_AUTH_KEY      = "msg91_test_local";
+process.env.MSG91_TEMPLATE_ID   = "tmpl_test_local";
 delete process.env.NAFUME_DB_FILE;
+delete process.env.VERCEL;
+delete process.env.NODE_ENV;
 
 const mocks = require("./mocks");
 mocks.install();
@@ -119,20 +130,70 @@ function shippingFor(n) {
 
 /* payFor(items, shipping, extras) — full happy-path checkout, returns
    { create, pay, verify }. */
-async function checkout(items, shipping, extras) {
+async function checkout(items, shipping, extras, client) {
   extras = extras || {};
+  client = client || api;
   const priced = catalog.priceCart(items);
   const totals = catalog.calculateTotals(priced.subtotal, priced.totalQty, extras.giftingAddOn === true, { prepaid: true });
 
-  const create = await api.post("/api/razorpay/create-order", Object.assign({
+  const create = await client.post("/api/razorpay/create-order", Object.assign({
     items: items, amount: totals.total, shipping: shipping
   }, extras));
 
   if (create.status !== 200) return { create: create, totals: totals };
 
   const pay    = mocks.simulatePayment(create.body.order_id);
-  const verify = await api.post("/api/razorpay/verify-payment", pay);
+  const verify = await client.post("/api/razorpay/verify-payment", pay);
   return { create: create, pay: pay, verify: verify, totals: totals };
+}
+
+/* registerAndVerify(client, details, channel)
+   The real two-step registration: start → read the code the provider got →
+   verify. Returns { start, verify }. */
+async function registerAndVerify(client, d, channel) {
+  const start = await client.post("/api/account/register", {
+    name: d.name, email: d.email, phone: d.phone, password: d.password || "GoodPass123",
+    verifyVia: channel === "phone" ? "phone" : undefined
+  });
+  if (start.status !== 200) return { start: start, verify: null };
+  const code = channel === "phone"
+    ? mocks.lastOtpFor(String(d.phone).replace(/\D/g, "").slice(-10))
+    : mocks.lastCodeFor(d.email);
+  const verify = await client.post("/api/account/verify", { challengeId: start.body.challengeId, code: code });
+  return { start: start, verify: verify, code: code };
+}
+
+/* ageChallenge(challengeId, patch) — test clock for verification challenges. */
+async function patchChallenge(challengeId, patch) {
+  await db.update("verification_challenges", { where: { id: challengeId }, set: patch });
+}
+
+/* deliver(orderId, daysAgo) — record a delivery through the admin API. */
+async function deliver(orderId, daysAgo) {
+  const at = new Date(Date.now() - (daysAgo || 0) * 24 * 60 * 60 * 1000).toISOString();
+  return api.post("/api/admin/orders", { orderId: orderId, action: "mark_delivered", deliveredAt: at },
+    { Authorization: "Bearer " + process.env.ADMIN_API_TOKEN });
+}
+
+/* reviewLinkFor(orderId) — issue a review request and capture the token the
+   email carried (the database only holds its hash). */
+async function reviewLinkFor(orderId) {
+  const order = await db.selectOne("orders", { order_id: orderId });
+  const due = new Date(Date.now() - (catalog.REVIEW_REQUEST_DELAY_DAYS + 1) * 86400000).toISOString();
+  if (!order.delivered_at || order.delivered_at > due) {
+    await db.update("orders", { where: { id: order.id }, set: { delivered_at: due } });
+  }
+  mocks.state.emails.length = 0;
+  await api.post("/api/jobs/review-requests", {}, { Authorization: "Bearer " + process.env.CRON_SECRET });
+  const mail = mocks.state.emails.find(function (e) { return /how is your nafume fragrance/i.test(e.subject || "") &&
+    (e.html || "").indexOf(encodeURIComponent(orderId)) !== -1; });
+  if (!mail) return null;
+  const m = /[?&]token=([A-Za-z0-9_-]+)/.exec(mail.html.replace(/&amp;/g, "&"));
+  return m ? m[1] : null;
+}
+
+function webhookSign(raw, secret) {
+  return require("crypto").createHmac("sha256", secret).update(raw).digest("hex");
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -383,18 +444,49 @@ async function testTamperedPayments() {
   order = await db.selectOne("orders", { order_id: create3.body.nafume_order_id });
   eq("underpaid payment left the order unpaid", order.payment_status, "pending");
 
-  // Razorpay unreachable during the confirmation fetch → the signature still
-  // proves authenticity, so a genuine payment must NOT be thrown away.
+  // Razorpay unreachable during the confirmation fetch. A valid signature is
+  // NOT proof of capture: the order must wait, never be marked paid, and the
+  // customer must be told not to pay again.
   const create4 = await api.post("/api/razorpay/create-order", {
     items: [{ id: "seduction", qty: 1 }], amount: 858, shipping: shippingFor(33)
   });
   const pay4 = mocks.simulatePayment(create4.body.order_id);
+  mocks.state.emails.length = 0;
   mocks.state.failRazorpayFetch = true;
   r = await api.post("/api/razorpay/verify-payment", pay4);
   mocks.state.failRazorpayFetch = false;
-  eq("genuine payment honoured when the confirmation fetch fails", r.status, 200);
+  eq("lookup failure → 202, not 200", r.status, 202);
+  eq("lookup failure → awaiting_verification state", r.body.paymentState, "awaiting_verification");
+  eq("customer is told not to pay again", r.body.message,
+    "We're confirming your payment. Please don't pay again. Your order status will update once confirmation arrives.");
   order = await db.selectOne("orders", { order_id: create4.body.nafume_order_id });
-  eq("…and it is recorded as paid", order.payment_status, "paid");
+  eq("DB: lookup failure did NOT mark the order paid", order.payment_status, "awaiting_verification");
+  eq("DB: the reported payment id is held for recovery", order.pending_payment_id, pay4.razorpay_payment_id);
+  ok("DB: no payment id committed as paid", order.razorpay_payment_id === null);
+  eq("no confirmation email while unconfirmed", mocks.state.emails.filter(function (e) {
+    return /is confirmed/i.test(e.subject || ""); }).length, 0);
+
+  // A timeout is treated exactly like a failure.
+  const create5 = await api.post("/api/razorpay/create-order", {
+    items: [{ id: "seduction", qty: 1 }], amount: 858, shipping: shippingFor(34)
+  });
+  const pay5 = mocks.simulatePayment(create5.body.order_id);
+  mocks.state.failPaymentFetch = true;
+  r = await api.post("/api/razorpay/verify-payment", pay5);
+  mocks.state.failPaymentFetch = false;
+  eq("payment-lookup error (order lookup fine) still holds", r.status, 202);
+  eq("DB: still not paid", (await db.selectOne("orders", { order_id: create5.body.nafume_order_id })).payment_status,
+    "awaiting_verification");
+
+  // Once Razorpay answers again, the same callback confirms it — once.
+  r = await api.post("/api/razorpay/verify-payment", pay4);
+  eq("retry after recovery confirms the captured payment", r.status, 200);
+  eq("…reported as paid", r.body.paymentState, "paid");
+  order = await db.selectOne("orders", { order_id: create4.body.nafume_order_id });
+  eq("DB: now paid", order.payment_status, "paid");
+  eq("DB: confirmation path recorded", order.payment_confirmed_via, "checkout_callback");
+  eq("DB: captured amount recorded in paise", order.payment_captured_amount, 858 * 100);
+  eq("DB: currency recorded", order.payment_currency, "INR");
 }
 
 async function testRazorpayOutage() {
@@ -492,14 +584,34 @@ async function testAccounts() {
   });
   eq("letters-only password rejected", r.status, 400);
 
+  // Step 1 sends a code and grants NOTHING yet.
   r = await api.post("/api/account/register", {
     name: prefill.name, email: prefill.email, phone: prefill.phone, password: "GoodPass123"
   });
-  eq("registration succeeded", r.status, 200);
+  eq("registration step 1 accepted", r.status, 200);
+  eq("…and requires verification", r.body.verificationRequired, true);
+  eq("…by email", r.body.channel, "email");
+  ok("…with a masked destination", /•••@example\.com$/.test(r.body.destination || ""), r.body.destination);
+  ok("step 1 sets NO session cookie", !r.rawCookies.some(function (c) { return c.indexOf("nf_session=") === 0 && !/Max-Age=0/.test(c); }));
+  eq("step 1 creates NO credentials",
+    await db.selectOne("customer_auth", { customer_id: guestCustomer.id }), null);
+  eq("me: still anonymous before verification", (await api.get("/api/account/me")).body.authenticated, false);
+  const code = mocks.lastCodeFor(prefill.email);
+  ok("a 6-digit code was emailed", /^\d{6}$/.test(code || ""));
+  const storedChallenge = await db.selectOne("verification_challenges", { id: r.body.challengeId });
+  ok("DB: the code is not stored in plaintext", JSON.stringify(storedChallenge).indexOf(code) === -1);
+  ok("DB: the password is only stored hashed", JSON.stringify(storedChallenge).indexOf("GoodPass123") === -1);
+  const outbox = await db.select("outbound_messages", { where: { related_id: r.body.challengeId } });
+  ok("DB: the outbox copy of the email is redacted", outbox.length === 1 && outbox[0].body.indexOf(code) === -1);
+
+  r = await api.post("/api/account/verify", { challengeId: r.body.challengeId, code: code });
+  eq("registration verified", r.status, 200);
   eq("registration linked the existing order", r.body.orderCount, 1);
-  ok("session cookie set on register", r.rawCookies.some(function (c) { return c.indexOf("nf_session=") === 0; }));
+  ok("session cookie set on verification", r.rawCookies.some(function (c) { return c.indexOf("nf_session=") === 0; }));
   ok("cookie is HttpOnly", r.rawCookies.some(function (c) { return /HttpOnly/i.test(c); }));
   ok("cookie is SameSite=Lax", r.rawCookies.some(function (c) { return /SameSite=Lax/i.test(c); }));
+  eq("email reported verified", r.body.customer.emailVerified, true);
+  eq("email verification does NOT verify the phone", r.body.customer.phoneVerified, false);
 
   // The account attached to the SAME customer row, not a new one.
   const after = await db.select("customers", { where: { email_normalized: ship.email } });
@@ -752,12 +864,29 @@ async function testDeliveryAndReviews() {
   const flow = await checkout([{ id: "dark-oud", qty: 1 }, { id: "seduction", qty: 1 }], ship);
   const orderId = flow.create.body.nafume_order_id;
 
-  // Reviewing before delivery is refused only when unpaid; a paid order is
-  // reviewable, and the request job is what waits for delivery.
+  // The customer who placed it proves their email and so owns the order.
+  const owner = makeClient();
+  const reg = await registerAndVerify(owner, ship);
+  eq("order owner verified their account", reg.verify && reg.verify.status, 200);
+
+  // Contact details alone are not access to a review (or its reward).
   let r = await client.post("/api/reviews/eligibility", { orderId: orderId, contact: ship.email });
-  eq("eligibility readable for a paid order", r.status, 200);
-  eq("two products are reviewable", r.body.products.length, 2);
-  eq("nothing reviewed yet", r.body.products.filter(function (p) { return p.reviewed; }).length, 0);
+  eq("order id + contact alone cannot open a review", r.status, 404);
+
+  // Paid but NOT delivered: eligibility says so, and submission is refused.
+  r = await owner.post("/api/reviews/eligibility", { orderId: orderId });
+  eq("owner can read eligibility", r.status, 200);
+  eq("not eligible before delivery", r.body.eligible, false);
+  eq("…because it is not delivered", r.body.reason, "not_delivered");
+  eq("…and no reward is offered yet", r.body.reward, null);
+
+  mocks.state.emails.length = 0;
+  r = await owner.post("/api/reviews/submit", { orderId: orderId, productId: "dark-oud", rating: 5,
+    body: "Trying to review before it even arrived." });
+  eq("review BEFORE delivery refused", r.status, 403);
+  eq("…with reason not_delivered", r.body.error, "not_delivered");
+  ok("…and no reward code returned", !r.body.reward);
+  eq("DB: no review stored before delivery", (await db.select("reviews", { where: { order_id: orderId } })).length, 0);
 
   // Admin auth.
   r = await client.get("/api/admin/orders");
@@ -784,6 +913,11 @@ async function testDeliveryAndReviews() {
   stored = await db.selectOne("orders", { order_id: orderId });
   eq("DB: delivery date stored", stored.delivered_at, deliveredAt);
   eq("DB: fulfillment is delivered", stored.fulfillment_status, "delivered");
+
+  r = await owner.post("/api/reviews/eligibility", { orderId: orderId });
+  eq("eligible once delivery is recorded", r.body.eligible, true);
+  eq("two products are reviewable", r.body.products.length, 2);
+  eq("nothing reviewed yet", r.body.products.filter(function (p) { return p.reviewed; }).length, 0);
 
   r = await client.post("/api/admin/orders",
     { orderId: orderId, action: "mark_delivered", deliveredAt: "banana" }, admin);
@@ -831,33 +965,33 @@ async function testDeliveryAndReviews() {
 
   /* ── the review form ──────────────────────────────────────────────────── */
   r = await client.post("/api/reviews/submit",
-    { orderId: orderId, contact: "wrong@example.com", productId: "dark-oud", rating: 5 });
-  eq("review with a wrong contact refused", r.status, 404);
+    { orderId: orderId, contact: ship.email, productId: "dark-oud", rating: 5 });
+  eq("review by a stranger with the right contact refused", r.status, 404);
 
-  r = await client.post("/api/reviews/submit",
-    { orderId: orderId, contact: ship.email, productId: "dark-oud", rating: 9 });
+  r = await owner.post("/api/reviews/submit",
+    { orderId: orderId, productId: "dark-oud", rating: 9 });
   eq("out-of-range rating rejected", r.status, 400);
 
-  r = await client.post("/api/reviews/submit",
-    { orderId: orderId, contact: ship.email, productId: "aqua-manthan", rating: 5 });
+  r = await owner.post("/api/reviews/submit",
+    { orderId: orderId, productId: "aqua-manthan", rating: 5 });
   eq("reviewing a product that wasn't in the order rejected", r.status, 400);
 
-  r = await client.post("/api/reviews/submit", {
-    orderId: orderId, contact: ship.email, productId: "dark-oud", rating: 5,
+  r = await owner.post("/api/reviews/submit", {
+    orderId: orderId, productId: "dark-oud", rating: 5,
     photo: "data:image/svg+xml;base64,PHN2Zz48L3N2Zz4="
   });
   eq("SVG masquerading as a photo rejected", r.status, 400);
 
-  r = await client.post("/api/reviews/submit", {
-    orderId: orderId, contact: ship.email, productId: "dark-oud", rating: 5,
+  r = await owner.post("/api/reviews/submit", {
+    orderId: orderId, productId: "dark-oud", rating: 5,
     photo: "data:image/png;base64,aGVsbG8gd29ybGQgbm90IGEgcG5n"
   });
   eq("non-image bytes claiming to be PNG rejected", r.status, 400);
 
   // A genuine 1×1 PNG.
   const realPng = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
-  r = await client.post("/api/reviews/submit", {
-    orderId: orderId, contact: ship.email, productId: "dark-oud", rating: 5,
+  r = await owner.post("/api/reviews/submit", {
+    orderId: orderId, productId: "dark-oud", rating: 5,
     title: "Outstanding", body: "Lasts all evening and the sillage is excellent.", photo: realPng
   });
   eq("valid review accepted", r.status, 200);
@@ -876,8 +1010,8 @@ async function testDeliveryAndReviews() {
   eq("DB: order points at the review", stored.review_id, reviews[0].id);
 
   // Duplicate submission — the requirement's "opens the review form twice".
-  r = await client.post("/api/reviews/submit",
-    { orderId: orderId, contact: ship.email, productId: "dark-oud", rating: 1, body: "Changed my mind" });
+  r = await owner.post("/api/reviews/submit",
+    { orderId: orderId, productId: "dark-oud", rating: 1, body: "Changed my mind" });
   eq("duplicate review rejected", r.status, 409);
   eq("DB: still one review", (await db.select("reviews", { where: { order_id: orderId } })).length, 1);
   eq("DB: original rating untouched",
@@ -885,8 +1019,8 @@ async function testDeliveryAndReviews() {
 
   // Concurrent duplicates.
   const raced = await Promise.all([1, 2, 3].map(function () {
-    return client.post("/api/reviews/submit",
-      { orderId: orderId, contact: ship.email, productId: "seduction", rating: 4, body: "Lovely fragrance indeed" });
+    return owner.post("/api/reviews/submit",
+      { orderId: orderId, productId: "seduction", rating: 4, body: "Lovely fragrance indeed" });
   }));
   eq("exactly one concurrent review succeeded",
     raced.filter(function (x) { return x.status === 200; }).length, 1);
@@ -894,7 +1028,7 @@ async function testDeliveryAndReviews() {
     (await db.select("reviews", { where: { order_id: orderId } })).length, 2);
 
   // Eligibility reflects what has been reviewed.
-  r = await client.post("/api/reviews/eligibility", { orderId: orderId, contact: ship.email });
+  r = await owner.post("/api/reviews/eligibility", { orderId: orderId });
   eq("nothing left to review", r.body.eligible, false);
   eq("reason is already_reviewed", r.body.reason, "already_reviewed");
 
@@ -933,15 +1067,17 @@ async function testDeliveryAndReviews() {
   r = await client.get("/api/reviews/list?productId=not-a-product");
   eq("unknown product rejected on list", r.status, 400);
 
-  // An unpaid order cannot be reviewed.
-  const unpaid = await api.post("/api/razorpay/create-order", {
-    items: [{ id: "seduction", qty: 1 }], amount: 858, shipping: shippingFor(92)
+  // An unpaid order cannot be reviewed — even by its owner, even if someone
+  // records a delivery on it.
+  const unpaid = await owner.post("/api/razorpay/create-order", {
+    items: [{ id: "seduction", qty: 1 }], amount: 858, shipping: ship
   });
-  r = await client.post("/api/reviews/submit", {
-    orderId: unpaid.body.nafume_order_id, contact: "customer92@example.com",
-    productId: "seduction", rating: 5
+  eq("owner's signed-in order created", unpaid.status, 200);
+  r = await owner.post("/api/reviews/submit", {
+    orderId: unpaid.body.nafume_order_id, productId: "seduction", rating: 5
   });
   eq("unpaid order cannot be reviewed", r.status, 403);
+  eq("…reason not_paid", r.body.error, "not_paid");
 
   /* ── COD delivery ────────────────────────────────────────────────────────
      A COD order is 'pending' until the courier collects the cash, so requiring
@@ -1313,45 +1449,61 @@ async function testDiscounts() {
 
   // ── the review reward ──
   const reviewer = shippingFor(210);
+  const reviewerClient = makeClient();
   r = await client.post("/api/discounts/validate", { code: "NAFUMEREVIEW", items: items, contact: reviewer.email });
-  eq("review reward refused with no review", r.body.applied, false);
-  eq("…with a no_review reason", r.body.reason, "no_review");
+  eq("review reward refused for a guest", r.body.applied, false);
+  eq("…who must sign in (the code is public)", r.body.reason, "sign_in_required");
 
-  // Give them a paid order and a review.
+  // Give them a paid order, a verified account, a delivery and a review.
   const rvFlow = await checkout([{ id: "dark-oud", qty: 1 }], reviewer);
   eq("reviewer's order paid", rvFlow.verify.status, 200);
   const rvOrderId = rvFlow.create.body.nafume_order_id;
+  const rvReg = await registerAndVerify(reviewerClient, reviewer);
+  eq("reviewer verified their account", rvReg.verify && rvReg.verify.status, 200);
+
+  r = await reviewerClient.post("/api/discounts/validate", { code: "NAFUMEREVIEW", items: items });
+  eq("signed in but no review yet → refused", r.body.applied, false);
+  eq("…with a no_review reason", r.body.reason, "no_review");
 
   const admin = { Authorization: "Bearer " + process.env.ADMIN_API_TOKEN };
   await client.post("/api/admin/orders", { orderId: rvOrderId, action: "mark_delivered" }, admin);
-  const rvSubmit = await client.post("/api/reviews/submit", {
-    orderId: rvOrderId, contact: reviewer.email, productId: "dark-oud",
+  const rvSubmit = await reviewerClient.post("/api/reviews/submit", {
+    orderId: rvOrderId, productId: "dark-oud",
     rating: 5, body: "Genuinely wonderful, lasts all evening."
   });
   eq("review submitted", rvSubmit.status, 200);
 
   r = await client.post("/api/discounts/validate", { code: "NAFUMEREVIEW", items: items, contact: reviewer.email });
-  eq("review reward unlocked by the review", r.body.applied, true);
+  eq("the public code still does nothing for a guest typing the reviewer's email", r.body.applied, false);
+
+  r = await reviewerClient.post("/api/discounts/validate", { code: "NAFUMEREVIEW", items: items });
+  eq("review reward unlocked for the signed-in reviewer", r.body.applied, true);
   ok("review reward has a real value", r.body.discount > 0);
 
-  // Spend it.
+  // A guest checkout that types the reviewer's details cannot spend it either.
   const rewardTotals = catalog.calculateTotals(priced.subtotal, priced.totalQty, false, {
     prepaid: true, discount: { code: "NAFUMEREVIEW", type: "percentage", value: 10 }
   });
-  const spend = await api.post("/api/razorpay/create-order", {
+  r = await api.post("/api/razorpay/create-order", {
     items: items, amount: rewardTotals.total, shipping: reviewer, discountCode: "NAFUMEREVIEW"
   });
-  eq("review reward accepted at checkout", spend.status, 200);
-  const spendPay = mocks.simulatePayment(spend.body.order_id);
-  await api.post("/api/razorpay/verify-payment", spendPay);
+  eq("guest checkout with the reviewer's email cannot apply the reward", r.status, 400);
 
-  r = await client.post("/api/discounts/validate", { code: "NAFUMEREVIEW", items: items, contact: reviewer.email });
+  // Spend it, signed in.
+  const spend = await reviewerClient.post("/api/razorpay/create-order", {
+    items: items, amount: rewardTotals.total, shipping: reviewer, discountCode: "NAFUMEREVIEW"
+  });
+  eq("review reward accepted at a signed-in checkout", spend.status, 200);
+  const spendPay = mocks.simulatePayment(spend.body.order_id);
+  await reviewerClient.post("/api/razorpay/verify-payment", spendPay);
+
+  r = await reviewerClient.post("/api/discounts/validate", { code: "NAFUMEREVIEW", items: items });
   eq("one reward per review — the second attempt is refused", r.body.applied, false);
   eq("…because it is already used", r.body.reason, "already_used");
 
-  // A second review earns a second reward.
-  const second = await client.post("/api/reviews/submit", {
-    orderId: rvOrderId, contact: reviewer.email, productId: "dark-oud", rating: 4 });
+  // A second review of the same product is not a second reward.
+  const second = await reviewerClient.post("/api/reviews/submit", {
+    orderId: rvOrderId, productId: "dark-oud", rating: 4 });
   eq("a duplicate product review is still refused", second.status, 409);
 
   // ── an abandoned checkout must not burn the discount ──
@@ -1488,10 +1640,9 @@ async function testOrderOwnership() {
   const bOrder = bFlow.create.body.nafume_order_id;
 
   const alice = makeClient();
-  let r = await alice.post("/api/account/register", {
-    name: aShip.name, email: aShip.email, phone: aShip.phone, password: "AlicePass123"
-  });
-  eq("customer A registered", r.status, 200);
+  const aReg = await registerAndVerify(alice, Object.assign({}, aShip, { password: "AlicePass123" }));
+  let r = aReg.verify;
+  eq("customer A registered", r && r.status, 200);
 
   // A signed-in customer sees only their own orders.
   r = await alice.get("/api/account/me");
@@ -1519,10 +1670,21 @@ async function testOrderOwnership() {
   // A cannot re-point their own account at B's identity to inherit the orders.
   r = await alice.post("/api/account/update", { email: bShip.email });
   eq("A cannot take over B's email", r.status, 400);
-  ok("…with a clear reason", /already used/i.test(r.body.message || ""), r.body.message);
+  eq("…a changed email needs a verification code", r.body.error, "verification_required");
 
   r = await alice.post("/api/account/update", { phone: bShip.phone });
   eq("A cannot take over B's phone", r.status, 400);
+
+  // …and starting verification for B's email sends the code to B, not A.
+  mocks.state.emails.length = 0;
+  r = await alice.post("/api/account/identifiers", { action: "start", channel: "email", value: bShip.email });
+  eq("A can only REQUEST a code for B's email", r.status, 200);
+  const toB = mocks.state.emails.filter(function (e) { return [].concat(e.to).indexOf(bShip.email) !== -1; });
+  eq("…which is delivered to B's inbox", toB.length, 1);
+  r = await alice.post("/api/account/identifiers", { action: "confirm", challengeId: r.body.challengeId, code: "000000" });
+  ok("A guessing the code is refused", r.status === 422 || r.status === 429, "got " + r.status);
+  r = await alice.get("/api/account/me");
+  ok("A still sees none of B's orders", JSON.stringify(r.body).indexOf(bOrder) === -1);
 
   // The body cannot smuggle a different customer id into an update.
   const aCustomer = await db.selectOne("customers", { email_normalized: aShip.email.toLowerCase() });
@@ -1629,21 +1791,34 @@ async function testWhatsAppAdapter() {
   eq("DB: nothing was queued for them",
     (await db.select("outbound_messages", { where: { related_id: "test-blast" } })).length, 0);
 
-  // Marketing to a consenting customer queues but is never claimed as sent.
+  // Sending is disabled until the launch gate is fully satisfied. A consenting
+  // customer passes the consent check, but nothing is sent OR queued, so no
+  // stale backlog can be released later.
   res = await messagingLib.sendWhatsApp({
     to: optIn.phone, body: "New launch!", kind: "marketing",
     customerId: inCust.id, relatedType: "marketing", relatedId: "test-blast-ok"
   });
-  eq("marketing to a consenting customer is queued", res.queued, true);
-  eq("…but never reported as sent without a provider", res.sent, false);
+  eq("consenting customer passes consent but sending is disabled", res.reason, "whatsapp_sending_disabled");
+  eq("…nothing queued", res.queued, false);
+  eq("…never reported as sent", res.sent, false);
+  eq("DB: no outbox row for a disabled channel",
+    (await db.select("outbound_messages", { where: { related_id: "test-blast-ok" } })).length, 0);
 
-  // Transactional messages do not require marketing consent.
+  // Setting the flag alone does not enable it: no adapter, credentials or templates.
+  process.env.WHATSAPP_SENDING_ENABLED = "true";
+  eq("the enable flag alone does not open the gate", messagingLib.whatsappConfigured(), false);
+  const readiness = messagingLib.whatsappReadiness();
+  eq("…readiness reports no adapter", readiness.adapterImplemented, false);
+  eq("…readiness reports no approved templates", readiness.templatesConfigured, false);
+  delete process.env.WHATSAPP_SENDING_ENABLED;
+
+  // Transactional messages do not require marketing consent (still disabled).
   res = await messagingLib.sendWhatsApp({
     to: optOut.phone, body: "Your order shipped.", kind: "transactional",
     customerId: outCust.id, relatedType: "order", relatedId: "test-txn"
   });
-  eq("transactional messages are allowed without marketing consent", res.queued, true);
-  eq("…and still never faked as sent", res.sent, false);
+  eq("transactional messages skip the marketing-consent check", res.reason, "whatsapp_sending_disabled");
+  eq("…and are never faked as sent", res.sent, false);
 
   // Missing kind is a programming error and must be refused, not defaulted.
   res = await messagingLib.sendWhatsApp({ to: optIn.phone, body: "x", customerId: inCust.id });
@@ -1758,8 +1933,10 @@ async function testAdversarial() {
   const rvFlow = await checkout([{ id: "dark-oud", qty: 1 }], rvShip);
   const rvId = rvFlow.create.body.nafume_order_id;
   await client.post("/api/admin/orders", { orderId: rvId, action: "mark_delivered" }, admin);
+  const rvToken = await reviewLinkFor(rvId);
+  ok("review-request email carried a review link token", !!rvToken);
   const submitted = await client.post("/api/reviews/submit", {
-    orderId: rvId, contact: rvShip.email, productId: "dark-oud", rating: 5,
+    orderId: rvId, token: rvToken, productId: "dark-oud", rating: 5,
     title: "<script>alert(1)</script>",
     body: "Lovely fragrance <img src=x onerror=alert(1)> indeed."
   });
@@ -1801,6 +1978,7 @@ async function testAdversarial() {
   const upFlow = await checkout([{ id: "red-spirit", qty: 1 }], uploadOrder);
   const upId = upFlow.create.body.nafume_order_id;
   await client.post("/api/admin/orders", { orderId: upId, action: "mark_delivered" }, admin);
+  const upToken = await reviewLinkFor(upId);
 
   const badUploads = [
     ["data:text/html;base64," + Buffer.from("<script>alert(1)</script>").toString("base64"), "HTML"],
@@ -1813,7 +1991,7 @@ async function testAdversarial() {
   ];
   for (const [payload, label] of badUploads) {
     const res = await client.post("/api/reviews/submit", {
-      orderId: upId, contact: uploadOrder.email, productId: "red-spirit",
+      orderId: upId, token: upToken, productId: "red-spirit",
       rating: 5, photo: payload
     });
     // 400 = rejected by validation, 413 = rejected before it was even parsed.
@@ -1856,6 +2034,851 @@ async function testAdversarial() {
     ok("response " + (i + 1) + " leaks no secret",
        secrets.every(function (s) { return body.indexOf(s) === -1; }));
   });
+}
+
+/* ══ Account ownership: unverified claims ════════════════════════════════════ */
+function hasSessionCookie(r) {
+  return (r.rawCookies || []).some(function (c) { return /^nf_session=[^;]+/.test(c) && !/Max-Age=0/i.test(c); });
+}
+
+async function testAccountOwnershipAttacks() {
+  section("Account ownership — unverified guest claims");
+
+  const victim = shippingFor(400);
+  const vFlow = await checkout([{ id: "seduction", qty: 1 }], victim);
+  const vOrder = vFlow.create.body.nafume_order_id;
+
+  // The audit's reproduction: register with the guest's email + another phone.
+  const attacker = makeClient();
+  mocks.state.emails.length = 0;
+  let r = await attacker.post("/api/account/register", {
+    name: "Attacker Person", email: victim.email, phone: "9123400000", password: "AttackPass123"
+  });
+  eq("claiming a guest email only starts verification", r.status, 200);
+  eq("…verification required", r.body.verificationRequired, true);
+  ok("…no session cookie issued", !hasSessionCookie(r));
+  const challengeId = r.body.challengeId;
+  const realCode = mocks.lastCodeFor(victim.email);
+  ok("…the code went to the VICTIM's inbox", !!realCode);
+
+  r = await attacker.get("/api/account/me");
+  eq("attacker is not signed in", r.body.authenticated, false);
+  ok("attacker sees none of the victim's orders", JSON.stringify(r.body).indexOf(vOrder) === -1);
+
+  let victimRow = await db.selectOne("customers", { email_normalized: victim.email });
+  eq("victim's record gained no credentials", await db.selectOne("customer_auth", { customer_id: victimRow.id }), null);
+  eq("victim's record is not flagged as an account", victimRow.has_account, false);
+  eq("victim's phone untouched", victimRow.phone_normalized, victim.phone);
+
+  // Guessing.
+  let last;
+  for (let i = 0; i < 5; i++) {
+    last = await attacker.post("/api/account/verify", { challengeId: challengeId, code: String(100000 + i) === realCode ? "999999" : String(100000 + i) });
+  }
+  eq("five wrong codes exhaust the challenge", last.status, 429);
+  eq("…too_many_attempts", last.body.error, "too_many_attempts");
+  r = await attacker.post("/api/account/verify", { challengeId: challengeId, code: realCode });
+  eq("even the right code is dead after the attempt limit", r.status, 410);
+  ok("…and no session came of it", !hasSessionCookie(r));
+
+  r = await attacker.post("/api/orders/lookup", { orderId: vOrder });
+  eq("attacker cannot look the order up without its contact", r.status, 404);
+  r = await attacker.post("/api/account/update", { name: "Hijack" });
+  eq("attacker has no session to update anything", r.status, 401);
+  eq("victim still has no account", await db.selectOne("customer_auth", { customer_id: victimRow.id }), null);
+
+  // The real owner verifies and gets exactly their purchase.
+  const owner = makeClient();
+  const reg = await registerAndVerify(owner, victim);
+  eq("the real owner can still verify and register", reg.verify.status, 200);
+  eq("…with their earlier purchase linked", reg.verify.body.orderCount, 1);
+  r = await owner.get("/api/account/me");
+  ok("…visible in their history", JSON.stringify(r.body.orders).indexOf(vOrder) !== -1);
+
+  // Typing the owner's email at a guest checkout cannot rewrite their profile
+  // or their consent.
+  await repoLib.setMarketingConsent(victimRow.id, "whatsapp", true, "account");
+  const intruderShip = Object.assign({}, shippingFor(401), { email: victim.email, addr1: "666 Intruder Lane", city: "Elsewhere" });
+  const intruderFlow = await checkout([{ id: "dark-oud", qty: 1 }], intruderShip, { whatsappOptIn: false });
+  eq("(setup) the intruder's guest checkout itself succeeded", intruderFlow.verify && intruderFlow.verify.status, 200);
+  victimRow = await db.selectOne("customers", { id: victimRow.id });
+  ok("guest checkout did not overwrite the account's saved address", victimRow.address_line1 !== "666 Intruder Lane",
+    victimRow.address_line1);
+  eq("…nor its phone", victimRow.phone_normalized, victim.phone);
+  eq("…nor its WhatsApp consent (different number typed)",
+    (await db.selectOne("marketing_consent", { customer_id: victimRow.id, channel: "whatsapp" })).opted_in, true);
+  r = await attacker.get("/api/account/me");
+  eq("the intruder still has no access", r.body.authenticated, false);
+
+  /* ── the cross-identifier variant ─────────────────────────────────────────
+     S creates a guest record pairing S's email with P's phone. P later buys
+     with a different email and the same phone, so P's order is filed on S's
+     record. S verifying S's email must NOT reveal P's order or address. */
+  const sShip = Object.assign({}, shippingFor(402), { phone: "9000011111" });
+  await checkout([{ id: "seduction", qty: 1 }], sShip);
+  const pShip = Object.assign({}, shippingFor(403), { phone: "9000011111", addr1: "7 Private Residence", city: "Mysuru" });
+  const pFlow = await checkout([{ id: "red-spirit", qty: 1 }], pShip);
+  const pOrder = pFlow.create.body.nafume_order_id;
+  const sRow = await db.selectOne("customers", { email_normalized: sShip.email });
+  eq("setup: P's order was filed on S's record by phone match",
+    (await db.selectOne("orders", { order_id: pOrder })).customer_id, sRow.id);
+
+  const sClient = makeClient();
+  const sReg = await registerAndVerify(sClient, sShip);
+  eq("S verified S's own email", sReg.verify.status, 200);
+  r = await sClient.get("/api/account/me");
+  ok("S cannot see P's order", JSON.stringify(r.body).indexOf(pOrder) === -1);
+  ok("S's saved address is not P's address", JSON.stringify(r.body.customer).indexOf("Private Residence") === -1,
+    JSON.stringify(r.body.customer.address));
+  r = await sClient.post("/api/orders/lookup", { orderId: pOrder });
+  eq("S's session cannot read P's order", r.status, 404);
+
+  // P proves the phone by SMS: S's account lists it unverified → conflict, no merge.
+  const pPhone = makeClient();
+  r = await pPhone.post("/api/otp/send", { phone: pShip.phone });
+  eq("P can request a sign-in code", r.status, 200);
+  r = await pPhone.post("/api/otp/verify", { phone: pShip.phone, otp: mocks.lastOtpFor(pShip.phone), challengeId: r.body.challengeId });
+  eq("a number unverified on someone else's account is a conflict", r.status, 409);
+  eq("…identifier_conflict", r.body.error, "identifier_conflict");
+  ok("…with no session", !hasSessionCookie(r));
+
+  // P registers with P's email → P's order (placed with that email) is P's.
+  const pClient = makeClient();
+  const pReg = await registerAndVerify(pClient, pShip);
+  eq("P registers by verifying P's email", pReg.verify.status, 200);
+  eq("…P's phone is reported as in use elsewhere, not silently moved", pReg.verify.body.conflicts.phone, "in_use");
+  r = await pClient.get("/api/account/me");
+  ok("P sees P's order", JSON.stringify(r.body.orders).indexOf(pOrder) !== -1);
+
+  // P then proves the phone from P's account: the verified owner wins it.
+  r = await pClient.post("/api/account/identifiers", { action: "start", channel: "phone", value: pShip.phone });
+  eq("P starts phone verification", r.status, 200);
+  r = await pClient.post("/api/account/identifiers", { action: "confirm", challengeId: r.body.challengeId,
+    code: mocks.lastOtpFor(pShip.phone) });
+  eq("P's phone verified", r.status, 200);
+  eq("…now verified on P's account", r.body.customer.phoneVerified, true);
+  eq("…and detached from S's record, where it was never proven",
+    (await db.selectOne("customers", { id: sRow.id })).phone_normalized, null);
+  r = await sClient.get("/api/account/me");
+  ok("S still cannot see P's order", JSON.stringify(r.body).indexOf(pOrder) === -1);
+}
+
+/* ══ Verification challenges ═════════════════════════════════════════════════ */
+async function testVerificationChallenges() {
+  section("Verification challenges — expiry, replay, throttling, binding");
+
+  const who = shippingFor(420);
+  const c1 = makeClient();
+
+  let r = await c1.post("/api/account/register", { name: who.name, email: who.email, phone: who.phone, password: "GoodPass123" });
+  eq("challenge started", r.status, 200);
+  const id1 = r.body.challengeId;
+  const code1 = mocks.lastCodeFor(who.email);
+
+  r = await c1.post("/api/account/verify", { challengeId: id1, code: code1 === "123123" ? "321321" : "123123" });
+  eq("a wrong code is refused", r.status, 422);
+  eq("…with attempts remaining", r.body.attemptsRemaining, 4);
+
+  r = await c1.post("/api/account/resend-code", { challengeId: id1 });
+  eq("an immediate resend is throttled", r.status, 429);
+  eq("…resend_too_soon", r.body.error, "resend_too_soon");
+
+  await patchChallenge(id1, { last_sent_at: new Date(Date.now() - 60000).toISOString() });
+  r = await c1.post("/api/account/resend-code", { challengeId: id1 });
+  eq("resend allowed after the cooldown", r.status, 200);
+  const code1b = mocks.lastCodeFor(who.email);
+  ok("a new code was issued", !!code1b);
+  if (code1b !== code1) {
+    r = await c1.post("/api/account/verify", { challengeId: id1, code: code1 });
+    eq("the superseded code no longer works", r.status, 422);
+  }
+  const row1 = await db.selectOne("verification_challenges", { id: id1 });
+  ok("resending does not reset the attempt count", row1.attempts >= 1, String(row1.attempts));
+
+  await patchChallenge(id1, { last_sent_at: new Date(Date.now() - 60000).toISOString(), send_count: 3 });
+  r = await c1.post("/api/account/resend-code", { challengeId: id1 });
+  eq("per-challenge send cap enforced", r.status, 429);
+  eq("…too_many_sends", r.body.error, "too_many_sends");
+
+  // Expiry.
+  await patchChallenge(id1, { expires_at: new Date(Date.now() - 1000).toISOString() });
+  r = await c1.post("/api/account/verify", { challengeId: id1, code: code1b });
+  eq("an expired challenge is refused even with the right code", r.status, 410);
+  eq("…challenge_expired", r.body.error, "challenge_expired");
+  ok("…and no session", !hasSessionCookie(r));
+
+  // Replay + concurrency.
+  await patchChallenge(id1, { last_sent_at: new Date(Date.now() - 60000).toISOString() });
+  r = await c1.post("/api/account/register", { name: who.name, email: who.email, phone: who.phone, password: "GoodPass123" });
+  eq("a fresh challenge can be started", r.status, 200);
+  const id2 = r.body.challengeId;
+  const code2 = mocks.lastCodeFor(who.email);
+  const racers = [makeClient(), makeClient(), makeClient()];
+  const results = await Promise.all(racers.map(function (cl) {
+    return cl.post("/api/account/verify", { challengeId: id2, code: code2 });
+  }));
+  eq("concurrent correct submissions succeed exactly once",
+    results.filter(function (x) { return x.status === 200; }).length, 1);
+  r = await c1.post("/api/account/verify", { challengeId: id2, code: code2 });
+  eq("replaying a consumed code is refused", r.status, 410);
+  ok("…as challenge_used or expired", r.body.error === "challenge_used" || r.body.error === "challenge_expired", r.body.error);
+  eq("exactly one credentials row", (await db.select("customer_auth", {
+    where: { customer_id: (await db.selectOne("customers", { email_normalized: who.email })).id } })).length, 1);
+  const consumed = await db.selectOne("verification_challenges", { id: id2 });
+  eq("DB: consumed challenge keeps no code hash", consumed.code_hash, null);
+  ok("DB: consumed challenge keeps no password hash", !(consumed.payload && consumed.payload.passwordHash));
+
+  // Registering again on a verified account.
+  r = await makeClient().post("/api/account/register", { name: who.name, email: who.email, phone: "9555500000", password: "GoodPass123" });
+  eq("an existing account cannot be re-registered", r.status, 409);
+
+  // Purpose binding: a sign-in challenge cannot complete a registration.
+  const phoneOnly = "9444400001";
+  r = await makeClient().post("/api/otp/send", { phone: phoneOnly });
+  eq("sign-in challenge started", r.status, 200);
+  r = await makeClient().post("/api/account/verify", { challengeId: r.body.challengeId, code: mocks.lastOtpFor(phoneOnly) });
+  eq("a phone_login challenge cannot complete registration", r.status, 410);
+
+  // Starting over retires the previous code.
+  const again = shippingFor(421);
+  r = await c1.post("/api/account/register", { name: again.name, email: again.email, phone: again.phone, password: "GoodPass123" });
+  const oldId = r.body.challengeId;
+  const oldCode = mocks.lastCodeFor(again.email);
+  await patchChallenge(oldId, { last_sent_at: new Date(Date.now() - 60000).toISOString() });
+  r = await c1.post("/api/account/register", { name: again.name, email: again.email, phone: again.phone, password: "GoodPass123" });
+  eq("a second registration start after cooldown", r.status, 200);
+  r = await c1.post("/api/account/verify", { challengeId: oldId, code: oldCode });
+  eq("the earlier challenge is retired", r.status, 410);
+
+  // Provider unavailable / failing.
+  const savedKey = process.env.RESEND_API_KEY;
+  delete process.env.RESEND_API_KEY;
+  const noMail = shippingFor(422);
+  r = await makeClient().post("/api/account/register", { name: noMail.name, email: noMail.email, phone: noMail.phone, password: "GoodPass123" });
+  process.env.RESEND_API_KEY = savedKey;
+  eq("no email provider → verification unavailable, not a silent account", r.status, 503);
+  eq("…verification_unavailable", r.body.error, "verification_unavailable");
+
+  mocks.state.failResend = true;
+  r = await makeClient().post("/api/account/register", { name: noMail.name, email: noMail.email, phone: noMail.phone, password: "GoodPass123" });
+  mocks.state.failResend = false;
+  eq("provider error → 502, customer told to retry", r.status, 502);
+  const failedLive = await db.selectOne("verification_challenges", { live_key: "account_register|email|" + noMail.email });
+  eq("…and the unsent challenge is not left live", failedLive, null);
+
+  // Conflicting existing records are reported, never merged.
+  const a = shippingFor(423);
+  const b = shippingFor(424);
+  const aFlow = await checkout([{ id: "seduction", qty: 1 }], a);
+  const bFlow = await checkout([{ id: "dark-oud", qty: 1 }], b);
+  const mixed = makeClient();
+  const mixedReg = await registerAndVerify(mixed, { name: a.name, email: a.email, phone: b.phone });
+  eq("registering A's email with B's phone verifies A's email", mixedReg.verify.status, 200);
+  eq("…B's phone is reported in use", mixedReg.verify.body.conflicts.phone, "in_use");
+  r = await mixed.get("/api/account/me");
+  ok("…A's order is linked", JSON.stringify(r.body.orders).indexOf(aFlow.create.body.nafume_order_id) !== -1);
+  ok("…B's order is NOT", JSON.stringify(r.body.orders).indexOf(bFlow.create.body.nafume_order_id) === -1);
+  const bRow = await db.selectOne("customers", { email_normalized: b.email });
+  eq("…B's record keeps B's phone", bRow.phone_normalized, b.phone);
+  eq("…and gained no account", bRow.has_account, false);
+
+  // Abandoned registrations do not keep a password hash around.
+  const abandoned = shippingFor(425);
+  r = await makeClient().post("/api/account/register", { name: abandoned.name, email: abandoned.email, phone: abandoned.phone, password: "GoodPass123" });
+  const abandonedId = r.body.challengeId;
+  await patchChallenge(abandonedId, { expires_at: new Date(Date.now() - 2 * 3600000).toISOString() });
+  r = await api.post("/api/jobs/maintenance", {}, { Authorization: "Bearer " + process.env.CRON_SECRET });
+  ok("maintenance reports the purge", !!(r.body.jobs && r.body.jobs["purge-verification-challenges"] &&
+    r.body.jobs["purge-verification-challenges"].ok), JSON.stringify(r.body.jobs && r.body.jobs["purge-verification-challenges"]));
+  const purged = await db.selectOne("verification_challenges", { id: abandonedId });
+  ok("DB: expired challenge payload (password hash) purged", !purged.payload || !purged.payload.passwordHash);
+  eq("DB: expired challenge code hash purged", purged.code_hash, null);
+}
+
+/* ══ Phone verification (MSG91 path, mocked) ═════════════════════════════════ */
+async function testPhoneVerification() {
+  section("Phone verification — sign-in, registration by SMS, linking");
+
+  const ship = Object.assign({}, shippingFor(430), { phone: "9333300001" });
+  const flow = await checkout([{ id: "aqua-manthan", qty: 1 }], ship);
+  const orderId = flow.create.body.nafume_order_id;
+  // Same email, different phone: must NOT come with a phone proof.
+  const emailTwin = Object.assign({}, ship, { phone: "9333300002" });
+  const twinFlow = await checkout([{ id: "seduction", qty: 1 }], Object.assign({}, emailTwin, { email: "twin430@example.com" }));
+
+  const c = makeClient();
+  let r = await c.post("/api/otp/send", { phone: ship.phone });
+  eq("OTP send creates a challenge", r.status, 200);
+  ok("…returns a challenge id", /^[0-9a-f-]{36}$/.test(r.body.challengeId || ""));
+  const otpChallenge = r.body.challengeId;
+  const otp = mocks.lastOtpFor(ship.phone);
+
+  r = await c.post("/api/otp/verify", { phone: ship.phone, otp: otp });
+  eq("verify without the challenge id is refused", r.status, 400);
+  r = await c.post("/api/otp/verify", { phone: ship.phone, otp: otp === "000000" ? "111111" : "000000", challengeId: otpChallenge });
+  eq("a wrong SMS code is refused", r.status, 422);
+  r = await c.post("/api/otp/verify", { phone: ship.phone, otp: otp, challengeId: otpChallenge });
+  eq("the right SMS code signs in", r.status, 200);
+  ok("…with a session", hasSessionCookie(r));
+  eq("…phone verified", r.body.customer.phoneVerified, true);
+  eq("…phone proof does NOT verify the email", r.body.customer.emailVerified, false);
+  r = await c.get("/api/account/me");
+  ok("orders placed with the proven phone are visible", JSON.stringify(r.body.orders).indexOf(orderId) !== -1);
+  ok("an order with a different phone is not", JSON.stringify(r.body.orders).indexOf(twinFlow.create.body.nafume_order_id) === -1);
+
+  r = await makeClient().post("/api/otp/verify", { phone: ship.phone, otp: otp, challengeId: otpChallenge });
+  eq("replaying the SMS challenge is refused", r.status, 410);
+
+  // Registration verified by SMS instead of email.
+  const smsReg = Object.assign({}, shippingFor(431), { phone: "9333300003" });
+  const s = makeClient();
+  const reg = await registerAndVerify(s, smsReg, "phone");
+  eq("registration by SMS code", reg.verify && reg.verify.status, 200);
+  eq("…phone verified", reg.verify.body.customer.phoneVerified, true);
+  eq("…email NOT verified by an SMS code", reg.verify.body.customer.emailVerified, false);
+
+  // Linking a purchase made with another email from a signed-in account.
+  const other = shippingFor(432);
+  const otherFlow = await checkout([{ id: "dark-oud", qty: 1 }], Object.assign({}, other, { phone: "9333300009" }));
+  r = await s.post("/api/account/identifiers", { action: "start", channel: "email", value: other.email });
+  eq("signed-in customer starts email verification", r.status, 200);
+  const linkChallenge = r.body.challengeId;
+  r = await makeClient().post("/api/account/identifiers", { action: "confirm", challengeId: linkChallenge, code: mocks.lastCodeFor(other.email) });
+  eq("confirming requires the SAME signed-in customer", r.status, 401);
+  r = await s.post("/api/account/identifiers", { action: "confirm", challengeId: linkChallenge, code: mocks.lastCodeFor(other.email) });
+  eq("verified email links the earlier purchase", r.status, 200);
+  eq("…one order linked", r.body.ordersLinked, 1);
+  r = await s.get("/api/account/me");
+  ok("…and it is in the history", JSON.stringify(r.body.orders).indexOf(otherFlow.create.body.nafume_order_id) !== -1);
+
+  // Someone else cannot then link the same, already-owned order.
+  const late = makeClient();
+  const lateReg = await registerAndVerify(late, Object.assign({}, shippingFor(433), { email: "late433@example.com" }));
+  r = await late.post("/api/account/identifiers", { action: "start", channel: "email", value: other.email });
+  ok("a verified email on another account cannot be started or confirmed elsewhere",
+    r.status === 200 || r.status === 409, "got " + r.status);
+  if (r.status === 200) {
+    r = await late.post("/api/account/identifiers", { action: "confirm", challengeId: r.body.challengeId, code: mocks.lastCodeFor(other.email) });
+    eq("…confirming it is a conflict, not a merge", r.status, 409);
+  }
+  r = await late.get("/api/account/me");
+  ok("…and the order stays with the first verified owner", JSON.stringify(r.body).indexOf(otherFlow.create.body.nafume_order_id) === -1);
+  ok("(setup) late customer registered", lateReg.verify && lateReg.verify.status === 200);
+}
+
+/* ══ Payment capture rules ═══════════════════════════════════════════════════ */
+async function testPaymentCapture() {
+  section("Payment capture — authorized, mismatches, races, stale events");
+
+  const WEBHOOK_SECRET = "capture_suite_webhook_secret";
+  process.env.RAZORPAY_WEBHOOK_SECRET = WEBHOOK_SECRET;
+  async function webhook(payload, eventId, rawOverride) {
+    const raw = rawOverride || JSON.stringify(payload);
+    const headers = { "Content-Type": "application/json", "x-razorpay-signature": webhookSign(raw, WEBHOOK_SECRET) };
+    if (eventId) headers["x-razorpay-event-id"] = eventId;
+    const res = await fetch(BASE + "/api/razorpay/webhook", { method: "POST", headers: headers, body: raw });
+    return { status: res.status, body: await res.json().catch(function () { return {}; }) };
+  }
+  function capturedEvent(pay) {
+    return { event: "payment.captured", payload: { payment: { entity: { id: pay.razorpay_payment_id, order_id: pay.razorpay_order_id } } } };
+  }
+
+  // Authorized but not captured, with a first-order discount riding on it.
+  const buyer = shippingFor(440);
+  const items = [{ id: "seduction", qty: 1 }];
+  const priced = catalog.priceCart(items);
+  const disc = catalog.calculateTotals(priced.subtotal, priced.totalQty, false, {
+    prepaid: true, discount: { code: "NAFUME10", type: "percentage", value: 10 } });
+  const create = await api.post("/api/razorpay/create-order", { items: items, amount: disc.total, shipping: buyer, discountCode: "NAFUME10" });
+  eq("order with discount created", create.status, 200);
+  const pay = mocks.simulatePayment(create.body.order_id, { status: "authorized" });
+  mocks.state.emails.length = 0;
+  let r = await api.post("/api/razorpay/verify-payment", pay);
+  eq("authorized-but-uncaptured → 202", r.status, 202);
+  eq("…awaiting_verification", r.body.paymentState, "awaiting_verification");
+  let order = await db.selectOne("orders", { order_id: create.body.nafume_order_id });
+  eq("DB: authorized is NOT paid", order.payment_status, "awaiting_verification");
+  eq("no confirmation email for an authorization", mocks.state.emails.length, 0);
+  eq("DB: discount not committed on an authorization",
+    (await db.selectOne("discount_redemptions", { order_id: order.order_id })).status, "pending");
+
+  // Delayed capture arrives by webhook.
+  mocks.setPaymentStatus(pay.razorpay_payment_id, "captured");
+  r = await webhook(capturedEvent(pay), "evt_capture_1");
+  eq("capture webhook accepted", r.status, 200);
+  eq("…state paid", r.body.state, "paid");
+  eq("…recovered by the webhook", r.body.recovered, true);
+  order = await db.selectOne("orders", { order_id: create.body.nafume_order_id });
+  eq("DB: paid after capture", order.payment_status, "paid");
+  eq("DB: confirmed via webhook", order.payment_confirmed_via, "webhook");
+  eq("DB: discount committed on capture",
+    (await db.selectOne("discount_redemptions", { order_id: order.order_id })).status, "redeemed");
+  const confirmations = function () {
+    return mocks.state.emails.filter(function (e) { return /is confirmed/i.test(e.subject || "") &&
+      [].concat(e.to).indexOf(buyer.email) !== -1; }).length;
+  };
+  eq("exactly one customer confirmation", confirmations(), 1);
+
+  r = await webhook(capturedEvent(pay), "evt_capture_1");
+  eq("the same event id redelivered is a no-op", r.status, 200);
+  eq("…flagged duplicate", r.body.duplicate, true);
+  r = await api.post("/api/razorpay/verify-payment", pay);
+  eq("late browser callback after the webhook", r.status, 200);
+  eq("…already processed", r.body.alreadyProcessed, true);
+  eq("still exactly one confirmation", confirmations(), 1);
+
+  // Stale / out-of-order events cannot move a paid order backwards.
+  r = await webhook({ event: "payment.failed", payload: { payment: { entity: { id: pay.razorpay_payment_id, order_id: pay.razorpay_order_id } } } }, "evt_stale_failed");
+  eq("stale payment.failed acknowledged", r.status, 200);
+  r = await webhook({ event: "payment.authorized", payload: { payment: { entity: { id: pay.razorpay_payment_id, order_id: pay.razorpay_order_id } } } }, "evt_stale_auth");
+  eq("stale payment.authorized acknowledged", r.status, 200);
+  eq("DB: still paid after stale events", (await db.selectOne("orders", { order_id: order.order_id })).payment_status, "paid");
+
+  // Payment on a different Razorpay order than the one signed for.
+  const c2 = await api.post("/api/razorpay/create-order", { items: items, amount: 858, shipping: shippingFor(441) });
+  const decoy = await api.post("/api/razorpay/create-order", { items: items, amount: 858, shipping: shippingFor(442) });
+  const crossed = mocks.simulatePayment(c2.body.order_id, { orderIdOnPayment: decoy.body.order_id });
+  r = await api.post("/api/razorpay/verify-payment", crossed);
+  eq("payment belonging to another order is refused", r.status, 400);
+  eq("…payment_mismatch", r.body.error, "payment_mismatch");
+  ok("…customer told not to pay again", /don't pay again/i.test(r.body.message || ""), r.body.message);
+  eq("DB: not paid", (await db.selectOne("orders", { order_id: c2.body.nafume_order_id })).payment_status, "pending");
+
+  // Wrong currency.
+  const c3 = await api.post("/api/razorpay/create-order", { items: items, amount: 858, shipping: shippingFor(443) });
+  const usd = mocks.simulatePayment(c3.body.order_id, { currency: "USD" });
+  r = await api.post("/api/razorpay/verify-payment", usd);
+  eq("currency mismatch refused", r.status, 400);
+  eq("…currency_mismatch", r.body.error, "currency_mismatch");
+  eq("DB: not paid", (await db.selectOne("orders", { order_id: c3.body.nafume_order_id })).payment_status, "pending");
+
+  // Captured then refunded before anyone confirmed it.
+  const c4 = await api.post("/api/razorpay/create-order", { items: items, amount: 858, shipping: shippingFor(444) });
+  const refunded = mocks.simulatePayment(c4.body.order_id);
+  mocks.setPaymentStatus(refunded.razorpay_payment_id, "refunded");
+  r = await webhook(capturedEvent(refunded), "evt_refunded_capture");
+  eq("a stale captured event for a refunded payment is acknowledged", r.status, 200);
+  ok("…but not treated as paid", r.body.state !== "paid", JSON.stringify(r.body));
+  r = await api.post("/api/razorpay/verify-payment", refunded);
+  eq("refunded payment via callback → 402", r.status, 402);
+  eq("DB: refunded payment never marked paid", (await db.selectOne("orders", { order_id: c4.body.nafume_order_id })).payment_status, "pending");
+
+  // Browser callbacks, webhooks and a reconciliation run all at once.
+  const racer = shippingFor(445);
+  const c5 = await api.post("/api/razorpay/create-order", { items: items, amount: 858, shipping: racer });
+  const racePay = mocks.simulatePayment(c5.body.order_id);
+  mocks.state.emails.length = 0;
+  const burst = await Promise.all([
+    api.post("/api/razorpay/verify-payment", racePay),
+    makeClient().post("/api/razorpay/verify-payment", racePay),
+    makeClient().post("/api/razorpay/verify-payment", racePay),
+    webhook(capturedEvent(racePay), "evt_race_a"),
+    webhook(capturedEvent(racePay), "evt_race_a"),
+    webhook({ event: "order.paid", payload: { payment: { entity: { id: racePay.razorpay_payment_id, order_id: racePay.razorpay_order_id } },
+      order: { entity: { id: racePay.razorpay_order_id } } } }, "evt_race_b"),
+    makeClient().post("/api/orders/lookup", { orderId: c5.body.nafume_order_id, contact: racer.email, refreshPayment: true })
+  ]);
+  ok("every concurrent confirmation path answered 2xx", burst.every(function (x) { return x.status >= 200 && x.status < 300; }),
+    burst.map(function (x) { return x.status; }).join(","));
+  eq("DB: exactly one paid row for the payment",
+    (await db.select("orders", { where: { razorpay_payment_id: racePay.razorpay_payment_id } })).length, 1);
+  eq("exactly one customer confirmation across all paths", mocks.state.emails.filter(function (e) {
+    return /is confirmed/i.test(e.subject || "") && [].concat(e.to).indexOf(racer.email) !== -1; }).length, 1);
+  eq("exactly one team alert across all paths", mocks.state.emails.filter(function (e) {
+    return /Order Paid/.test(e.subject || "") && (e.subject || "").indexOf(c5.body.nafume_order_id) !== -1; }).length, 1);
+  const events = await db.select("payment_events", { where: { razorpay_payment_id: racePay.razorpay_payment_id } });
+  eq("DB: webhook events recorded once per event id", events.length, 2);
+}
+
+/* ══ Webhook hardening ═══════════════════════════════════════════════════════ */
+async function testWebhookHardening() {
+  section("Webhook — raw-body signature, fail-closed, retries");
+
+  const SECRET = "hardening_webhook_secret";
+  process.env.RAZORPAY_WEBHOOK_SECRET = SECRET;
+  const ship = shippingFor(450);
+  const create = await api.post("/api/razorpay/create-order", { items: [{ id: "dark-oud", qty: 1 }], amount: 858, shipping: ship });
+  const pay = mocks.simulatePayment(create.body.order_id);
+  const payload = { event: "payment.captured", payload: { payment: { entity: { id: pay.razorpay_payment_id, order_id: pay.razorpay_order_id } } } };
+
+  // Signed compact JSON, sent pretty-printed: same object, different bytes.
+  const compact = JSON.stringify(payload);
+  const pretty  = JSON.stringify(payload, null, 2);
+  let res = await fetch(BASE + "/api/razorpay/webhook", { method: "POST",
+    headers: { "Content-Type": "application/json", "x-razorpay-signature": webhookSign(compact, SECRET) }, body: pretty });
+  eq("signature over different bytes (re-serialised) is rejected", res.status, 401);
+
+  // Signed over the exact odd-looking bytes: accepted → the RAW body is what is verified.
+  const odd = '{ "event" : "payment.captured",\n  "payload": ' + JSON.stringify(payload.payload) + ' }';
+  mocks.state.failOrderPaymentsFetch = true;
+  res = await fetch(BASE + "/api/razorpay/webhook", { method: "POST",
+    headers: { "Content-Type": "application/json", "x-razorpay-signature": webhookSign(odd, SECRET), "x-razorpay-event-id": "evt_odd_bytes" }, body: odd });
+  mocks.state.failOrderPaymentsFetch = false;
+  eq("exact raw bytes verified; Razorpay unreachable → 503 so it retries", res.status, 503);
+  eq("DB: still not paid while unconfirmable", (await db.selectOne("orders", { order_id: create.body.nafume_order_id })).payment_status, "pending");
+  const pendingEvent = await db.selectOne("payment_events", { event_key: "razorpay:evt_odd_bytes" });
+  ok("DB: the unfinished event is not marked processed", pendingEvent && !pendingEvent.processed_at);
+
+  res = await fetch(BASE + "/api/razorpay/webhook", { method: "POST",
+    headers: { "Content-Type": "application/json", "x-razorpay-signature": webhookSign(odd, SECRET), "x-razorpay-event-id": "evt_odd_bytes" }, body: odd });
+  const retried = await res.json();
+  eq("Razorpay's retry of the same event now succeeds", res.status, 200);
+  eq("…and is processed, not skipped as a duplicate", retried.state, "paid");
+
+  res = await fetch(BASE + "/api/razorpay/webhook", { method: "POST",
+    headers: { "Content-Type": "application/json" }, body: compact });
+  eq("missing signature header rejected", res.status, 401);
+
+  res = await fetch(BASE + "/api/razorpay/webhook", { method: "POST",
+    headers: { "Content-Type": "application/json", "x-razorpay-signature": webhookSign(compact, "some-other-secret") }, body: compact });
+  eq("signature made with another secret rejected", res.status, 401);
+
+  const unknown = JSON.stringify({ event: "payment.captured", payload: { payment: { entity: { id: "pay_nope123", order_id: "order_nope123" } } } });
+  res = await fetch(BASE + "/api/razorpay/webhook", { method: "POST",
+    headers: { "Content-Type": "application/json", "x-razorpay-signature": webhookSign(unknown, SECRET) }, body: unknown });
+  const unknownBody = await res.json();
+  eq("event for an unknown order acknowledged", res.status, 200);
+  eq("…not handled", unknownBody.handled, false);
+}
+
+/* ══ Browser closed after paying ═════════════════════════════════════════════ */
+async function testBrowserCloseRecovery() {
+  section("Browser-close recovery — status refresh + reconciliation");
+
+  const cron = { Authorization: "Bearer " + process.env.CRON_SECRET };
+  const ship = shippingFor(460);
+  const create = await api.post("/api/razorpay/create-order", { items: [{ id: "red-spirit", qty: 1 }], amount: 858, shipping: ship });
+  mocks.simulatePayment(create.body.order_id);           // captured; browser never calls back
+  const orderId = create.body.nafume_order_id;
+
+  const guest = makeClient();
+  mocks.state.emails.length = 0;
+  let r = await guest.post("/api/orders/lookup", { orderId: orderId, contact: ship.email });
+  eq("plain lookup shows pending", r.body.order.paymentStatus, "pending");
+  r = await guest.post("/api/orders/lookup", { orderId: orderId, contact: ship.email, refreshPayment: true });
+  eq("confirmation-page refresh asks Razorpay and settles it", r.body.paymentRefresh, "paid");
+  eq("…order now paid", r.body.order.paymentStatus, "paid");
+  eq("DB: confirmed via status refresh", (await db.selectOne("orders", { order_id: orderId })).payment_confirmed_via, "status_refresh");
+  r = await guest.post("/api/orders/lookup", { orderId: orderId, contact: ship.email, refreshPayment: true });
+  eq("refreshing a paid order does nothing more", r.body.order.paymentStatus, "paid");
+  eq("one confirmation email", mocks.state.emails.filter(function (e) { return /is confirmed/i.test(e.subject || ""); }).length, 1);
+
+  r = await makeClient().post("/api/orders/lookup", { orderId: orderId, refreshPayment: true });
+  eq("refresh without ownership is refused like any lookup", r.status, 404);
+
+  // Callback failed → awaiting; capture happens; the daily job settles it.
+  const ship2 = shippingFor(461);
+  const c2 = await api.post("/api/razorpay/create-order", { items: [{ id: "red-spirit", qty: 1 }], amount: 858, shipping: ship2 });
+  const p2 = mocks.simulatePayment(c2.body.order_id, { status: "authorized" });
+  r = await api.post("/api/razorpay/verify-payment", p2);
+  eq("authorized callback held", r.status, 202);
+  const fewMinutesAgo = new Date(Date.now() - 5 * 60000).toISOString();
+  await db.update("orders", { where: { order_id: c2.body.nafume_order_id }, set: { created_at: fewMinutesAgo } });
+
+  r = await api.post("/api/jobs/reconcile-payments", {}, cron);
+  eq("reconciliation leaves an authorized payment awaiting", (await db.selectOne("orders", { order_id: c2.body.nafume_order_id })).payment_status,
+    "awaiting_verification");
+  ok("…and counts it", r.body.summary.awaiting >= 1, JSON.stringify(r.body.summary));
+
+  mocks.setPaymentStatus(p2.razorpay_payment_id, "captured");
+  const dry = await api.get("/api/jobs/reconcile-payments?dryRun=1", cron);
+  ok("dry run reports it would recover", (dry.body.needsAttention || []).some(function (n) {
+    return n.orderId === c2.body.nafume_order_id && n.issue === "would_recover"; }));
+  eq("…without changing it", (await db.selectOne("orders", { order_id: c2.body.nafume_order_id })).payment_status, "awaiting_verification");
+  r = await api.post("/api/jobs/reconcile-payments", {}, cron);
+  eq("reconciliation confirms the captured payment",
+    (await db.selectOne("orders", { order_id: c2.body.nafume_order_id })).payment_status, "paid");
+
+  // An authorization that never captures is flagged for a human after an hour.
+  const ship3 = shippingFor(462);
+  const c3 = await api.post("/api/razorpay/create-order", { items: [{ id: "red-spirit", qty: 1 }], amount: 858, shipping: ship3 });
+  const p3 = mocks.simulatePayment(c3.body.order_id, { status: "authorized" });
+  await api.post("/api/razorpay/verify-payment", p3);
+  await db.update("orders", { where: { order_id: c3.body.nafume_order_id }, set: { created_at: new Date(Date.now() - 2 * 3600000).toISOString() } });
+  r = await api.post("/api/jobs/reconcile-payments", {}, cron);
+  ok("long-uncaptured authorization is flagged", (r.body.needsAttention || []).some(function (n) {
+    return n.orderId === c3.body.nafume_order_id && n.issue === "not_captured"; }), JSON.stringify(r.body.needsAttention));
+
+  // Every attempt failed → the waiting order is closed as failed.
+  mocks.setPaymentStatus(p3.razorpay_payment_id, "failed");
+  await api.post("/api/jobs/reconcile-payments", {}, cron);
+  eq("all attempts failed → failed", (await db.selectOne("orders", { order_id: c3.body.nafume_order_id })).payment_status, "failed");
+}
+
+/* ══ Review access + delivery rules ══════════════════════════════════════════ */
+async function testReviewAccessRules() {
+  section("Reviews — delivery gate, links, guessed ids, other customers");
+
+  const admin = { Authorization: "Bearer " + process.env.ADMIN_API_TOKEN };
+  const a = shippingFor(470);
+  const b = shippingFor(471);
+  const aFlow = await checkout([{ id: "seduction", qty: 1 }], a);
+  const bFlow = await checkout([{ id: "dark-oud", qty: 1 }], b);
+  const aId = aFlow.create.body.nafume_order_id;
+  const bId = bFlow.create.body.nafume_order_id;
+
+  const stranger = makeClient();
+  let r = await stranger.post("/api/reviews/submit", { orderId: aId, token: "A".repeat(43), productId: "seduction", rating: 5 });
+  eq("a guessed order id with a made-up token is refused", r.status, 404);
+
+  // Deliver both, issue both review links.
+  await deliver(aId, 0);
+  await deliver(bId, 0);
+  const aOwner = makeClient();
+  await registerAndVerify(aOwner, a);
+  r = await aOwner.post("/api/reviews/eligibility", { orderId: aId });
+  eq("owner is eligible immediately after delivery", r.body.eligible, true);
+
+  const cron = { Authorization: "Bearer " + process.env.CRON_SECRET };
+  r = await api.post("/api/jobs/review-requests", {}, cron);
+  ok("…while the review-request email waits for the delay",
+    !(await db.selectOne("review_requests", { order_id: aId })), "request sent too early");
+
+  const aToken = await reviewLinkFor(aId);
+  const bToken = await reviewLinkFor(bId);
+  ok("links issued for both", !!aToken && !!bToken);
+  const aRequest = await db.selectOne("review_requests", { order_id: aId });
+  ok("DB: only the token hash is stored", aRequest.access_token_hash && aRequest.access_token_hash.indexOf(aToken) === -1 &&
+    JSON.stringify(aRequest).indexOf(aToken) === -1);
+
+  r = await stranger.post("/api/reviews/submit", { orderId: bId, token: aToken, productId: "dark-oud", rating: 1, body: "Using someone else's link." });
+  eq("A's review link cannot open B's order", r.status, 404);
+  r = await aOwner.post("/api/reviews/submit", { orderId: bId, productId: "dark-oud", rating: 1, body: "Signed in as someone else." });
+  eq("A's session cannot review B's order", r.status, 404);
+
+  r = await stranger.post("/api/reviews/submit", { orderId: bId, token: bToken, productId: "dark-oud", rating: 5, body: "Arrived and it's lovely." });
+  eq("B's own link works", r.status, 200);
+  eq("DB: review records how access was proven",
+    (await db.selectOne("reviews", { order_id: bId })).access_method, "review_link");
+
+  await db.update("review_requests", { where: { order_id: aId }, set: { access_token_expires_at: new Date(Date.now() - 1000).toISOString() } });
+  r = await stranger.post("/api/reviews/eligibility", { orderId: aId, token: aToken });
+  eq("an expired review link is refused", r.status, 404);
+  r = await aOwner.post("/api/reviews/eligibility", { orderId: aId });
+  eq("…the signed-in owner still has access", r.status, 200);
+
+  // Cancelled after delivery: no review.
+  const c = shippingFor(472);
+  const cFlow = await checkout([{ id: "aqua-manthan", qty: 1 }], c);
+  const cOwner = makeClient();
+  await registerAndVerify(cOwner, c);
+  await deliver(cFlow.create.body.nafume_order_id, 0);
+  await api.post("/api/admin/orders", { orderId: cFlow.create.body.nafume_order_id, action: "cancel" }, admin);
+  r = await cOwner.post("/api/reviews/submit", { orderId: cFlow.create.body.nafume_order_id, productId: "aqua-manthan", rating: 5 });
+  eq("a cancelled order cannot be reviewed", r.status, 403);
+}
+
+/* ══ Review-request scheduling ═══════════════════════════════════════════════ */
+async function testReviewScheduler() {
+  section("Review requests — delay fixtures, repeated and concurrent runs");
+
+  const cron = { Authorization: "Bearer " + process.env.CRON_SECRET };
+  const delay = catalog.REVIEW_REQUEST_DELAY_DAYS;
+  eq("configured delay is the documented default", delay, 5);
+
+  // Drain anything other suites left due.
+  await api.post("/api/jobs/review-requests", {}, cron);
+
+  const early = shippingFor(480);
+  const due = shippingFor(481);
+  const eFlow = await checkout([{ id: "seduction", qty: 1 }], early);
+  const dFlow = await checkout([{ id: "seduction", qty: 1 }], due);
+  await deliver(eFlow.create.body.nafume_order_id, delay - 1);
+  await deliver(dFlow.create.body.nafume_order_id, delay + 1);
+
+  mocks.state.emails.length = 0;
+  const runs = await Promise.all([1, 2, 3].map(function () { return makeClient().post("/api/jobs/review-requests", {}, cron); }));
+  ok("concurrent runs all succeed", runs.every(function (x) { return x.status === 200; }));
+  const mails = function (email) { return mocks.state.emails.filter(function (e) {
+    return [].concat(e.to).indexOf(email) !== -1 && /how is your nafume fragrance/i.test(e.subject || ""); }).length; };
+  eq("an order delivered delay-1 days ago is not asked yet", mails(early.email), 0);
+  eq("an order delivered delay+1 days ago is asked exactly once", mails(due.email), 1);
+  eq("DB: one review_request row", (await db.select("review_requests", { where: { order_id: dFlow.create.body.nafume_order_id } })).length, 1);
+
+  await api.post("/api/jobs/review-requests", {}, cron);
+  await api.post("/api/jobs/maintenance", {}, cron);
+  eq("repeated runs (incl. maintenance) send nothing more", mails(due.email), 1);
+
+  await db.update("orders", { where: { order_id: eFlow.create.body.nafume_order_id },
+    set: { delivered_at: new Date(Date.now() - (delay + 0.1) * 86400000).toISOString() } });
+  await api.post("/api/jobs/review-requests", {}, cron);
+  eq("once the delay passes, the early order is asked once", mails(early.email), 1);
+
+  const undelivered = shippingFor(482);
+  const uFlow = await checkout([{ id: "seduction", qty: 1 }], undelivered);
+  await db.update("orders", { where: { order_id: uFlow.create.body.nafume_order_id },
+    set: { created_at: new Date(Date.now() - 30 * 86400000).toISOString() } });
+  await api.post("/api/jobs/review-requests", {}, cron);
+  eq("an old but undelivered order is never asked", mails(undelivered.email), 0);
+}
+
+/* ══ Reward redemption races ═════════════════════════════════════════════════ */
+async function testRewardConcurrency() {
+  section("Rewards — one review, one use, even in parallel");
+
+  const r0s = shippingFor(490);
+  const flow = await checkout([{ id: "dark-oud", qty: 1 }], r0s);
+  const orderId = flow.create.body.nafume_order_id;
+  const me = makeClient();
+  await registerAndVerify(me, r0s);
+  await deliver(orderId, 0);
+  let r = await me.post("/api/reviews/submit", { orderId: orderId, productId: "dark-oud", rating: 5, body: "Earned my reward honestly." });
+  eq("one review written", r.status, 200);
+
+  const items = [{ id: "seduction", qty: 1 }];
+  const priced = catalog.priceCart(items);
+  const t = catalog.calculateTotals(priced.subtotal, priced.totalQty, false, {
+    prepaid: true, discount: { code: "NAFUMEREVIEW", type: "percentage", value: 10 } });
+  const attempts = await Promise.all([1, 2, 3, 4].map(function () {
+    return me.post("/api/razorpay/create-order", { items: items, amount: t.total, shipping: r0s, discountCode: "NAFUMEREVIEW" });
+  }));
+  const accepted = attempts.filter(function (x) { return x.status === 200 && x.body.discount && x.body.discount.applied; });
+  eq("four parallel checkouts: exactly one gets the single reward", accepted.length, 1);
+  ok("the others are refused cleanly", attempts.filter(function (x) { return x.status !== 200; })
+    .every(function (x) { return x.status === 409 || x.status === 400; }), attempts.map(function (x) { return x.status; }).join(","));
+  const customer = await db.selectOne("customers", { email_normalized: r0s.email });
+  const active = await discounts.activeRedemptions("NAFUMEREVIEW", customer.id);
+  eq("DB: one active redemption slot", active.length, 1);
+
+  const cod = await me.post("/api/orders/create-cod", { items: items, shipping: r0s, discountCode: "NAFUMEREVIEW" });
+  ok("a later COD attempt cannot reuse it", cod.status === 400 || cod.status === 409 ||
+    (cod.status === 200 && !(cod.body.discount && cod.body.discount.applied)), JSON.stringify(cod.body.discount || cod.body.error));
+
+  // The database guard itself: two claims for the last slot, both past the
+  // eligibility check, racing to write. The UNIQUE slot_key admits one.
+  const racerCustomer = db.newId();
+  await db.insert("customers", { id: racerCustomer, name: "Slot Racer", email: null, email_normalized: null,
+    phone: null, phone_normalized: null, has_account: true, country: "India", source: "test",
+    created_at: db.nowISO(), updated_at: db.nowISO() });
+  const makeOrder = async function (n) {
+    const oid = "NF-SLOTRACE-" + n;
+    await db.insert("orders", { id: db.newId(), order_id: oid, customer_id: racerCustomer, payment_status: "pending",
+      order_status: "created", checkout_type: "razorpay", payment_method: "razorpay", amount_total: 700,
+      created_at: db.nowISO(), updated_at: db.nowISO() });
+    return oid;
+  };
+  const o1 = await makeOrder(1);
+  const o2 = await makeOrder(2);
+  const claims = await Promise.all([o1, o2].map(function (oid) {
+    return discounts.recordRedemption({ code: "NAFUMEREVIEW", customerId: racerCustomer, orderId: oid,
+      subtotalBefore: 799, discountAmount: 79, finalAmount: 720, allowance: 1 });
+  }));
+  eq("two simultaneous claims on one slot: exactly one succeeds",
+    claims.filter(function (c) { return c.ok; }).length, 1);
+  eq("DB: exactly one redemption row holds the slot",
+    (await db.select("discount_redemptions", { where: { slot_key: "NAFUMEREVIEW|" + racerCustomer + "|1" } })).length, 1);
+  const replay = await discounts.recordRedemption({ code: "NAFUMEREVIEW", customerId: racerCustomer,
+    orderId: claims[0].ok ? o1 : o2, subtotalBefore: 799, discountAmount: 79, finalAmount: 720, allowance: 1 });
+  eq("replaying the winning order's claim is idempotent", replay.ok, true);
+}
+
+/* ══ Handlers invoked directly (no HTTP, no router) ══════════════════════════ */
+function fakeReq(method, headers, bodyText, extra) {
+  const { PassThrough } = require("stream");
+  const req = new PassThrough();
+  req.method = method;
+  req.headers = Object.assign({ host: "localhost" }, headers || {});
+  req.url = "/api/x";
+  req.query = {};
+  req.socket = { remoteAddress: "198.51.100." + Math.floor(Math.random() * 200) };
+  Object.assign(req, extra || {});
+  process.nextTick(function () { if (bodyText) req.write(bodyText); req.end(); });
+  return req;
+}
+function fakeRes() {
+  const out = { statusCode: 200, headers: {}, body: null };
+  const res = {
+    setHeader: function (k, v) { out.headers[k.toLowerCase()] = v; },
+    getHeader: function (k) { return out.headers[k.toLowerCase()]; },
+    status: function (c) { out.statusCode = c; return res; },
+    json: function (p) { out.body = p; return res; },
+    end: function () { return res; }
+  };
+  return { res: res, out: out };
+}
+
+async function testDirectHandlers() {
+  section("Handlers called directly");
+
+  const verifyHandler  = require("../server/razorpay/verify-payment");
+  const webhookHandler = require("../server/razorpay/webhook");
+  const adminHandler   = require("../server/admin/orders");
+  const jobHandler     = require("../server/jobs/reconcile-payments");
+
+  const create = await api.post("/api/razorpay/create-order", { items: [{ id: "seduction", qty: 1 }], amount: 858, shipping: shippingFor(500) });
+  const pay = mocks.simulatePayment(create.body.order_id);
+  mocks.state.failPaymentFetch = true;
+  let f = fakeRes();
+  await verifyHandler(fakeReq("POST", { "content-type": "application/json" }, JSON.stringify(pay)), f.res);
+  mocks.state.failPaymentFetch = false;
+  eq("direct verify-payment: lookup failure → 202", f.out.statusCode, 202);
+  eq("direct verify-payment: not paid", (await db.selectOne("orders", { order_id: create.body.nafume_order_id })).payment_status, "awaiting_verification");
+
+  // A runtime that consumed the stream and only offers a parsed object must be refused.
+  process.env.RAZORPAY_WEBHOOK_SECRET = "direct_secret";
+  const payload = { event: "payment.captured", payload: { payment: { entity: { id: pay.razorpay_payment_id, order_id: pay.razorpay_order_id } } } };
+  const raw = JSON.stringify(payload);
+  f = fakeRes();
+  const consumed = fakeReq("POST", { "content-type": "application/json", "content-length": String(raw.length),
+    "x-razorpay-signature": webhookSign(raw, "direct_secret") }, "", { body: payload });
+  await webhookHandler(consumed, f.res);
+  eq("direct webhook: parsed body without raw bytes fails closed", f.out.statusCode, 500);
+  eq("…raw_body_unavailable", f.out.body && f.out.body.error, "raw_body_unavailable");
+
+  f = fakeRes();
+  await webhookHandler(fakeReq("POST", { "content-type": "application/json", "x-razorpay-signature": webhookSign(raw, "direct_secret") }, raw), f.res);
+  eq("direct webhook: raw stream verified and settled", f.out.statusCode, 200);
+  eq("…paid", (await db.selectOne("orders", { order_id: create.body.nafume_order_id })).payment_status, "paid");
+
+  f = fakeRes();
+  await adminHandler(fakeReq("GET", {}), f.res);
+  eq("direct admin/orders without token → 401", f.out.statusCode, 401);
+  f = fakeRes();
+  await adminHandler(fakeReq("GET", { authorization: "Bearer " + process.env.CRON_SECRET }), f.res);
+  eq("direct admin/orders refuses the CRON secret", f.out.statusCode, 401);
+  f = fakeRes();
+  await jobHandler(fakeReq("GET", { authorization: "Bearer not-the-secret" }), f.res);
+  eq("direct reconcile job with a wrong token → 401", f.out.statusCode, 401);
+}
+
+/* ══ Router ══════════════════════════════════════════════════════════════════ */
+async function testRouter() {
+  section("api/index.js router");
+  const client = makeClient();
+  const probes = ["/api/../server/_lib/db", "/api/_lib/db", "/api/account", "/api/account/me/extra", "/api/%2e%2e/health"];
+  for (const p of probes) {
+    const r = await client.get(p);
+    ok("non-route " + p + " is not executed", r.status === 404 || (r.status === 200 && r.body.service === "nafume"),
+      "got " + r.status);
+  }
+  const router = require("../api/index.js");
+  const f = fakeRes();
+  await router({ method: "GET", url: "/api?path=health", query: { path: "health" }, headers: {} }, f.res);
+  eq("router dispatches the Vercel rewrite shape (?path=)", f.out.statusCode, 200);
+  const g = fakeRes();
+  await router({ method: "GET", url: "/api?path=../../etc/passwd", query: { path: "../../etc/passwd" }, headers: {} }, g.res);
+  eq("router refuses a traversal-looking rewrite", g.out.statusCode, 404);
+}
+
+/* ══ Storage safety ══════════════════════════════════════════════════════════
+   Runs near the end: resetting the driver cache replaces the in-memory store. */
+async function testStorageSafety() {
+  section("Storage safety — no memory driver on hosted deployments");
+
+  process.env.VERCEL = "1";
+  db._resetDriverCache();
+  eq("memory driver refused on Vercel", db.isConfigured(), false);
+  eq("…and reported as refused", db.memoryDriverRefused(), true);
+  const r = await makeClient().post("/api/razorpay/create-order", { items: [{ id: "seduction", qty: 1 }], amount: 858, shipping: shippingFor(510) });
+  eq("checkout answers 503 instead of saving to memory", r.status, 503);
+  delete process.env.VERCEL;
+  db._resetDriverCache();
+  eq("memory driver available again locally", db.isConfigured(), true);
+
+  const sb = db.supabaseAuthHeaders("sb_secret_abc123");
+  ok("Supabase secret key sent only as apikey", sb.apikey === "sb_secret_abc123" && !sb.Authorization);
+  const jwt = db.supabaseAuthHeaders("eyJhbGciOiJIUzI1NiJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIn0.c2lnbmF0dXJl");
+  ok("legacy service_role JWT keeps apikey + Bearer", !!jwt.apikey && /^Bearer eyJ/.test(jwt.Authorization || ""));
 }
 
 async function testRateLimiting() {
@@ -1902,7 +2925,13 @@ async function main() {
     testDeliveryAndReviews, testWebhookRecovery, testCodDoubleSubmit,
     testDiscounts, testReconciliation, testOrderOwnership, testOutbox,
     testWhatsAppAdapter, testHealth, testAdversarial,
-    testMissingCredentials, testMisconfiguration, testErrorHygiene, testRateLimiting
+    // launch-readiness regression suites
+    testAccountOwnershipAttacks, testVerificationChallenges, testPhoneVerification,
+    testPaymentCapture, testWebhookHardening, testBrowserCloseRecovery,
+    testReviewAccessRules, testReviewScheduler, testRewardConcurrency,
+    testDirectHandlers, testRouter,
+    testMissingCredentials, testMisconfiguration, testErrorHygiene,
+    testStorageSafety, testRateLimiting
   ];
 
   for (const suite of suites) {

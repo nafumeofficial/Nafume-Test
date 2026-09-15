@@ -5,10 +5,13 @@
  * customer id comes from the session cookie, never from the request body, so
  * one customer cannot edit another.
  *
- * Body (all optional): { name, email, phone, address:{line1,line2,city,state,pincode},
+ * Body (all optional): { name, address:{line1,line2,city,state,pincode},
  *                        whatsappOptIn }
- * Changing email/phone to a value another customer already owns is rejected
- * rather than allowed to collide with the unique index.
+ * Email and phone are NOT editable here. Putting an address you have not proven
+ * on your account would let guest orders placed with it be matched to you, and
+ * would block its real owner — so a changed email/phone is refused with
+ * `verification_required` and goes through /api/account/identifiers instead.
+ * Sending the current, unchanged values is accepted (the edit form does).
  */
 "use strict";
 
@@ -43,36 +46,18 @@ module.exports = async function handler(req, res) {
       else patch.name = name;
     }
 
-    /* ── email ──────────────────────────────────────────────────────────── */
-    if (body.email !== undefined && validate.clean(body.email, 254) !== (me.email || "")) {
-      const email = validate.normalizeEmail(body.email);
-      if (!email) {
-        e.add("email", "Please enter a valid email address.");
-      } else if (email !== me.email_normalized) {
-        const clash = await db.selectOne("customers", { email_normalized: email });
-        if (clash && clash.id !== me.id) {
-          e.add("email", "That email is already used by another NAFUME account.");
-        } else {
-          patch.email = validate.displayEmail(body.email);
-          patch.email_normalized = email;
-        }
-      }
-    }
-
-    /* ── phone ──────────────────────────────────────────────────────────── */
-    if (body.phone !== undefined && validate.clean(body.phone, 20) !== (me.phone || "")) {
-      const phone = validate.normalizePhone(body.phone);
-      if (!phone) {
-        e.add("phone", "Please enter a valid 10-digit Indian mobile number.");
-      } else if (phone !== me.phone_normalized) {
-        const clash = await db.selectOne("customers", { phone_normalized: phone });
-        if (clash && clash.id !== me.id) {
-          e.add("phone", "That mobile number is already used by another NAFUME account.");
-        } else {
-          patch.phone = phone;
-          patch.phone_normalized = phone;
-        }
-      }
+    /* ── email / phone: changes need verification ─────────────────────── */
+    const wantsEmail = body.email !== undefined && validate.clean(body.email, 254) !== "" &&
+      validate.normalizeEmail(body.email) !== (me.email_normalized || null);
+    const wantsPhone = body.phone !== undefined && validate.clean(body.phone, 20) !== "" &&
+      validate.normalizePhone(body.phone) !== (me.phone_normalized || null);
+    if (wantsEmail || wantsPhone) {
+      const fields = {};
+      if (wantsEmail) fields.email = "Verify a new email with a code before it's saved.";
+      if (wantsPhone) fields.phone = "Verify a new mobile number with a code before it's saved.";
+      return http.fail(res, 400, "verification_required",
+        "To change your " + (wantsEmail && wantsPhone ? "email and mobile number" : wantsEmail ? "email" : "mobile number") +
+        ", verify the new one with a code first.", { fields: fields });
     }
 
     /* ── address ────────────────────────────────────────────────────────── */

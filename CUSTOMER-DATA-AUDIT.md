@@ -1,5 +1,12 @@
 # NAFUME customer data collection audit
 
+> **Superseded (15 September 2026).** The three issues below have been fixed in
+> code and covered by regression tests on branch
+> `fix/launch-readiness-ownership-payments-reviews`. Current status, live
+> verification evidence and remaining actions are in
+> [NAFUME-READINESS-REPORT.md](NAFUME-READINESS-REPORT.md). This file is kept as
+> the historical record.
+
 Reviewed: 7 September 2026.
 
 Compared the two-page `ref/NAFUME_Customer_Data_Collection_Plan (2).pdf` against the current working files, including uncommitted changes. The PDF was treated as the requested comparison baseline, not as permission to change the website or deploy it.

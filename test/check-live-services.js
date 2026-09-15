@@ -7,11 +7,12 @@
  * This one talks to the real services, and is the single command that turns
  * "code complete, live verification pending" into "verified".
  *
- * RUN IT WITH TEST CREDENTIALS FIRST.
+ * RUN IT AGAINST AN ISOLATED TEST PROJECT FIRST.
  *   Razorpay: rzp_test_… keys. Never live keys — this script creates a real
  *   Razorpay order (₹1, which is never paid and simply expires).
- *   Supabase: fine against the production project. Every row it writes is
- *   clearly marked test data and is DELETED again at the end.
+ *   Supabase: a separate TEST project. Every row it writes is clearly marked
+ *   test data; the storage layer has no DELETE, so rows are marked and the
+ *   exact cleanup SQL is printed.
  *
  * WHAT IT WILL NEVER DO
  *   - capture, charge, or refund money
@@ -23,8 +24,11 @@
  * Usage:
  *   Load your environment however you like, then:
  *     node test/check-live-services.js
- *     node test/check-live-services.js --email you@yourdomain.com   (also tests Resend)
+ *     node test/check-live-services.js --email you@yourdomain.com   (also tests Resend + reads the delivery event)
  *     node test/check-live-services.js --keep                       (leaves test rows)
+ *     node test/check-live-services.js --write-persistence-probe    (writes marked rows, prints a marker)
+ *     node test/check-live-services.js --verify-persistence <marker> (after a restart/redeploy: rows still there?)
+ *     node test/check-live-services.js --site https://<deployment>  (non-mutating checks of a deployment)
  */
 "use strict";
 
@@ -53,6 +57,11 @@ const args      = process.argv.slice(2);
 const KEEP      = args.indexOf("--keep") !== -1;
 const emailArg  = args.indexOf("--email");
 const TEST_EMAIL = emailArg !== -1 ? args[emailArg + 1] : null;
+const siteArg   = args.indexOf("--site");
+const SITE      = siteArg !== -1 ? String(args[siteArg + 1] || "").replace(/\/+$/, "") : null;
+const WRITE_PROBE = args.indexOf("--write-persistence-probe") !== -1;
+const verifyArg = args.indexOf("--verify-persistence");
+const VERIFY_MARKER = verifyArg !== -1 ? args[verifyArg + 1] : null;
 
 const TEST_MARKER = "livecheck-" + Date.now();
 const created = { customers: [], orders: [], leads: [] };
@@ -116,6 +125,56 @@ async function checkSupabase() {
   }
   if (schemaOk) ok("all " + tables.length + " tables exist", true);
   if (!schemaOk) return false;
+
+  // Migration 20260915_launch_readiness — new tables and columns.
+  const probes = [
+    ["verification_challenges", "id,live_key,code_hash,attempts,expires_at,consumed_at"],
+    ["payment_events",          "id,event_key,processed_at"],
+    ["orders",                  "id,verified_owner_customer_id,ship_email_normalized,pending_payment_id,payment_confirmed_via"],
+    ["customers",               "id,email_verified_at,phone_verified_at"],
+    ["review_requests",         "id,access_token_hash,access_token_expires_at"],
+    ["discount_redemptions",    "id,allowance_slot,slot_key"],
+    ["schema_migrations",       "version"]
+  ];
+  let migrationOk = true;
+  for (const [table, columns] of probes) {
+    try { await db.select(table, { columns: columns, limit: 1 }); }
+    catch (err) {
+      migrationOk = false;
+      ok("migration object " + table + "(" + columns + ")", false,
+         "Apply db/migrations/20260915_launch_readiness.sql. (" + (err.detail || err.message) + ")");
+    }
+  }
+  if (migrationOk) {
+    const applied = await db.selectOne("schema_migrations", { version: "20260915_launch_readiness" }).catch(function () { return null; });
+    ok("migration 20260915_launch_readiness is recorded", !!applied);
+  }
+  if (!migrationOk) return false;
+
+  // The CHECK constraint on payment_status.
+  let checkBlocked = false;
+  try {
+    await db.insert("orders", {
+      id: db.newId(), order_id: "NF-LIVECHECK-BADSTATUS-" + String(Date.now()).slice(-6),
+      currency: "INR", amount_total: 1, payment_status: "definitely_not_a_status",
+      order_status: "created", fulfillment_status: "unfulfilled", payment_method: "razorpay", checkout_type: "razorpay",
+      ship_country: "India", created_at: db.nowISO(), updated_at: db.nowISO()
+    });
+  } catch (err) { checkBlocked = err instanceof db.DbError; }
+  ok("orders.payment_status CHECK constraint is enforced", checkBlocked);
+
+  // One live verification challenge per identifier.
+  const liveKey = "account_register|email|" + TEST_MARKER + "@nafume-livecheck.invalid";
+  const chRow = function () {
+    return { id: db.newId(), purpose: "account_register", channel: "email",
+             identifier: TEST_MARKER + "@nafume-livecheck.invalid", provider: "resend", payload: {},
+             expires_at: new Date(Date.now() + 60000).toISOString(), live_key: liveKey,
+             created_at: db.nowISO(), updated_at: db.nowISO(), last_sent_at: db.nowISO() };
+  };
+  let liveBlocked = false;
+  try { await db.insert("verification_challenges", chRow()); await db.insert("verification_challenges", chRow()); }
+  catch (err) { liveBlocked = err instanceof db.UniqueViolationError; }
+  ok("UNIQUE live challenge per identifier is enforced", liveBlocked);
 
   // INSERT — clearly marked test data.
   const email = TEST_MARKER + "@nafume-livecheck.invalid";
@@ -274,22 +333,30 @@ async function checkRazorpay() {
     console.log("        created " + order.id + " — it will expire unpaid; no money moves");
   }
 
-  // Signature scheme — verified locally against the real secret, exactly as
-  // /api/razorpay/verify-payment does. No payment is needed to prove this.
-  const crypto = require("crypto");
+  // Signature scheme — the same verifier the endpoint uses, run against the
+  // real secret. (Only proves our code and secret agree; a real Checkout
+  // payment is still needed to prove Razorpay signs the same way.)
+  const crypto   = require("crypto");
+  const payments = require("../server/_lib/payments");
   const sampleOrder = (order && order.id) || "order_sample";
-  const samplePayment = "pay_sample";
-  const signature = crypto.createHmac("sha256", keySecret)
-    .update(sampleOrder + "|" + samplePayment).digest("hex");
-  const recomputed = crypto.createHmac("sha256", keySecret)
-    .update(sampleOrder + "|" + samplePayment).digest("hex");
-  ok("HMAC signature scheme matches the verification code", signature === recomputed);
+  const signature = crypto.createHmac("sha256", keySecret).update(sampleOrder + "|pay_sample").digest("hex");
+  ok("verify-payment's signature check accepts a correctly signed sample",
+     payments.checkoutSignatureValid(sampleOrder, "pay_sample", signature));
+  ok("…and rejects a tampered one",
+     !payments.checkoutSignatureValid(sampleOrder, "pay_other", signature));
+
+  // Fetching the order's payments is what reconciliation and status refresh do.
+  if (order && order.id) {
+    const listed = await payments.fetchOrderPayments(order.id);
+    ok("order payments can be listed (reconciliation path)", listed.ok === true, listed.reason || "");
+  }
 
   // Webhook secret.
   if (process.env.RAZORPAY_WEBHOOK_SECRET) {
     ok("RAZORPAY_WEBHOOK_SECRET is set", true);
-    console.log("        Confirm in the Razorpay dashboard: Settings → Webhooks →");
-    console.log("        URL = <your-domain>/api/razorpay/webhook, event = payment.captured");
+    console.log("        Confirm in the Razorpay dashboard: Account & Settings → Webhooks →");
+    console.log("        URL = <your-domain>/api/razorpay/webhook");
+    console.log("        events = payment.captured, order.paid, payment.authorized, payment.failed");
   } else {
     skip("webhook secret", "RAZORPAY_WEBHOOK_SECRET not set — payments abandoned mid-redirect " +
          "will only be recovered by /api/jobs/reconcile-payments");
@@ -343,9 +410,111 @@ async function checkResend() {
           "order confirmations and review requests will reach customers too.</p>",
     relatedType: "livecheck", relatedId: TEST_MARKER
   });
-  ok("a real email was accepted by Resend", result.sent === true,
+  ok("a real email was ACCEPTED by Resend (not yet proof of delivery)", result.sent === true,
      result.sent ? "" : "reason: " + result.reason);
-  if (result.sent) console.log("        check the inbox for " + TEST_EMAIL);
+  if (!result.sent || !result.providerMessageId) return;
+
+  // Acceptance is not receipt. Ask Resend what happened to it.
+  let lastEvent = null;
+  for (let i = 0; i < 10 && (!lastEvent || lastEvent === "queued" || lastEvent === "sent"); i++) {
+    await new Promise(function (r) { setTimeout(r, 3000); });
+    try {
+      const ev = await fetch("https://api.resend.com/emails/" + encodeURIComponent(result.providerMessageId), {
+        headers: { "Authorization": "Bearer " + process.env.RESEND_API_KEY }
+      });
+      if (ev.ok) lastEvent = ((await ev.json()) || {}).last_event || null;
+    } catch (_) { /* keep polling */ }
+  }
+  console.log("        Resend last_event for this message: " + (lastEvent || "unknown"));
+  ok("Resend reports the message as delivered", lastEvent === "delivered",
+     "last_event = " + lastEvent + ". 'bounced'/'complained' mean it did not arrive; anything else — check the inbox for " +
+     TEST_EMAIL + " and the Resend dashboard.");
+}
+
+/* ── 4b. persistence across restarts / redeploys ────────────────────────────
+   Run --write-persistence-probe, restart or redeploy, then
+   --verify-persistence <marker>. Proves the rows live in Postgres, not memory. */
+async function writePersistenceProbe() {
+  section("Persistence probe — write");
+  if (db.driverName() !== "supabase") { skip("persistence probe", "Supabase is not configured"); return; }
+  const email = TEST_MARKER + "@nafume-livecheck.invalid";
+  const customerId = db.newId();
+  const leadId = db.newId();
+  const now = db.nowISO();
+  await db.insert("customers", { id: customerId, name: "NAFUME Persistence Probe", email: email, email_normalized: email,
+    country: "India", source: "live_check", has_account: false, created_at: now, updated_at: now });
+  await db.insert("leads", { id: leadId, email: email, email_normalized: email, source: "popup_lead",
+    discount_code: "NAFUME10", metadata: { trigger: "manual", page: "live-check" }, created_at: now, updated_at: now });
+  await db.insert("quiz_responses", { id: db.newId(), email: email, email_normalized: email, customer_id: customerId,
+    lead_id: leadId, answers: { family: "oud" }, recommended_product_id: "dark-oud", preference_tags: ["oud"],
+    source: "fragrance_quiz", created_at: now });
+  await db.insert("marketing_consent", { id: db.newId(), customer_id: customerId, channel: "whatsapp", opted_in: false,
+    consent_source: "checkout", consent_at: now, revoked_at: now, updated_at: now });
+  ok("probe rows written (customer, lead, quiz response, consent)", true);
+  console.log("\n  MARKER: " + TEST_MARKER);
+  console.log("  Now restart / redeploy, then run:");
+  console.log("    node test/check-live-services.js --verify-persistence " + TEST_MARKER);
+}
+
+async function verifyPersistence(marker) {
+  section("Persistence probe — verify " + marker);
+  if (db.driverName() !== "supabase") { skip("persistence verify", "Supabase is not configured"); return; }
+  const email = marker + "@nafume-livecheck.invalid";
+  const customer = await db.selectOne("customers", { email_normalized: email });
+  ok("customer survived", !!customer);
+  ok("lead survived", !!(await db.selectOne("leads", { email_normalized: email, source: "popup_lead" })));
+  ok("quiz response survived", !!(await db.selectOne("quiz_responses", { email_normalized: email })));
+  ok("consent record survived", !!(customer && await db.selectOne("marketing_consent", { customer_id: customer.id, channel: "whatsapp" })));
+  console.log("  Remove the probe rows with:");
+  console.log("    DELETE FROM quiz_responses    WHERE email_normalized = '" + email + "';");
+  console.log("    DELETE FROM leads             WHERE email_normalized = '" + email + "';");
+  console.log("    DELETE FROM customers         WHERE email_normalized = '" + email + "';  -- cascades consent");
+}
+
+/* ── 4c. a deployment, checked from outside (read-only) ─────────────────── */
+async function checkSite(site) {
+  section("Deployment " + site + " — read-only checks");
+  async function req(pathname, init) {
+    try {
+      const r = await fetch(site + pathname, Object.assign({ redirect: "manual" }, init || {}));
+      let body = null;
+      try { body = await r.json(); } catch (_) {}
+      return { status: r.status, body: body };
+    } catch (err) { return { status: 0, error: err.message }; }
+  }
+
+  let r = await req("/api/health");
+  ok("public health answers", r.status === 200, "HTTP " + r.status);
+  ok("…and reports storage configured", !!(r.body && r.body.storage === true), JSON.stringify(r.body));
+
+  if (process.env.ADMIN_API_TOKEN) {
+    r = await req("/api/health", { headers: { Authorization: "Bearer " + process.env.ADMIN_API_TOKEN } });
+    const probe = r.body && r.body.storage && r.body.storage.probe;
+    ok("detailed health: database reachable", !!(probe && probe.reachable), JSON.stringify(probe));
+    ok("detailed health: migration applied", !!(probe && probe.migrationApplied), JSON.stringify(probe));
+    ok("detailed health: storage driver is supabase", !!(r.body && r.body.storage && r.body.storage.driver === "supabase"));
+    if (r.body && r.body.nextSteps && r.body.nextSteps.length) {
+      console.log("        nextSteps:\n          - " + r.body.nextSteps.join("\n          - "));
+    }
+  } else {
+    skip("detailed health", "ADMIN_API_TOKEN not set locally");
+  }
+
+  const raw = JSON.stringify({ event: "payment.captured", payload: { payment: { entity: { id: "pay_livecheckbad", order_id: "order_livecheckbad" } } } });
+  r = await req("/api/razorpay/webhook", { method: "POST", headers: { "Content-Type": "application/json", "x-razorpay-signature": "0".repeat(64) }, body: raw });
+  ok("webhook endpoint rejects a bad signature (401, not 500/503)", r.status === 401,
+     "HTTP " + r.status + (r.status === 503 ? " — RAZORPAY_WEBHOOK_SECRET or Razorpay keys not set on the deployment" : "") +
+     (r.status === 500 ? " — raw body unavailable on this runtime; webhooks would never verify" : ""));
+
+  r = await req("/api/jobs/maintenance", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+  ok("scheduled job refuses an anonymous caller", r.status === 401, "HTTP " + r.status);
+  r = await req("/api/admin/orders");
+  ok("admin API refuses an anonymous caller", r.status === 401, "HTTP " + r.status);
+
+  for (const p of ["/server/_lib/db.js", "/db/schema.sql", "/test/run-tests.js", "/CUSTOMER-DATA-AUDIT.md"]) {
+    const s = await req(p);
+    ok("source file " + p + " is not publicly served", s.status !== 200, "HTTP " + s.status);
+  }
 }
 
 /* ── 5. pricing agreement ────────────────────────────────────────────────── */
@@ -392,8 +561,9 @@ async function cleanup() {
 
   console.log("  Marked " + removed + " test record(s) as cancelled/deleted.");
   console.log("  The storage driver has no DELETE verb, so remove them fully with:");
-  console.log("    DELETE FROM orders    WHERE order_id LIKE 'NF-LIVECHECK-%';");
-  console.log("    DELETE FROM customers WHERE source = 'live_check';");
+  console.log("    DELETE FROM orders                  WHERE order_id LIKE 'NF-LIVECHECK-%';");
+  console.log("    DELETE FROM verification_challenges WHERE identifier LIKE 'livecheck-%@nafume-livecheck.invalid';");
+  console.log("    DELETE FROM customers               WHERE source = 'live_check';");
 }
 
 /* ── main ────────────────────────────────────────────────────────────────── */
@@ -402,18 +572,24 @@ async function main() {
   console.log("NAFUME — live service check");
   console.log("Marker for anything written: " + TEST_MARKER);
 
-  const report = checkConfig();
-  checkPricing();
+  if (VERIFY_MARKER) {
+    await verifyPersistence(VERIFY_MARKER);
+  } else {
+    const report = checkConfig();
+    checkPricing();
 
-  if (report.missingRequired.length) {
-    console.log("\n  Required variables are missing — skipping the live checks that need them.");
+    if (report.missingRequired.length) {
+      console.log("\n  Required variables are missing — skipping the live checks that need them.");
+    }
+
+    const supabaseOk = await checkSupabase();
+    await checkRazorpay();
+    await checkResend();
+    if (WRITE_PROBE) await writePersistenceProbe();
+    if (SITE) await checkSite(SITE);
+
+    if (supabaseOk) await cleanup();
   }
-
-  const supabaseOk = await checkSupabase();
-  await checkRazorpay();
-  await checkResend();
-
-  if (supabaseOk) await cleanup();
 
   console.log("\n" + "═".repeat(70));
   console.log("  " + passed + " passed, " + failed + " failed, " + skipped + " skipped");

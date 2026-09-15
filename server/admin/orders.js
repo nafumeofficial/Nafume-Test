@@ -19,24 +19,15 @@
  */
 "use strict";
 
-const crypto    = require("crypto");
 const http      = require("../_lib/http");
 const validate  = require("../_lib/validate");
 const repo      = require("../_lib/repo");
 const db        = require("../_lib/db");
 const discounts = require("../_lib/discounts");
+const auth      = require("../_lib/auth");
 
-const ADMIN_API_TOKEN = process.env.ADMIN_API_TOKEN;
-
-function tokenMatches(req) {
-  if (!ADMIN_API_TOKEN) return false;
-  const header = String((req.headers && req.headers.authorization) || "");
-  const given  = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
-  if (!given) return false;
-  const a = Buffer.from(given);
-  const b = Buffer.from(ADMIN_API_TOKEN);
-  return a.length === b.length && crypto.timingSafeEqual(a, b);
-}
+/* Read per request; compared in constant time (see _lib/auth.js). */
+function tokenMatches(req) { return auth.bearerMatches(req, ["ADMIN_API_TOKEN"]); }
 
 /* Parses an optional ISO timestamp, refusing anything unparseable or absurdly
    far in the future (a typo'd delivery date would mis-schedule review requests). */
@@ -51,7 +42,7 @@ function parseTimestamp(value, fallbackNow) {
 module.exports = async function handler(req, res) {
   if (req.method === "OPTIONS") { res.status(204).end(); return; }
 
-  if (!ADMIN_API_TOKEN) {
+  if (!auth.anyConfigured(["ADMIN_API_TOKEN"])) {
     console.error("[admin/orders] refusing — ADMIN_API_TOKEN is not set");
     return http.fail(res, 503, "admin_not_configured",
       "Admin API is not configured. Set ADMIN_API_TOKEN to enable it.");

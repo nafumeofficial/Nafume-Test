@@ -25,9 +25,9 @@
 "use strict";
 
 const http = require("../_lib/http");
+const auth = require("../_lib/auth");
 
-const CRON_SECRET     = process.env.CRON_SECRET;
-const ADMIN_API_TOKEN = process.env.ADMIN_API_TOKEN;
+const JOB_TOKENS = ["CRON_SECRET", "ADMIN_API_TOKEN"];
 
 const JOBS = [
   { name: "review-requests",    module: "./review-requests" },
@@ -35,14 +35,8 @@ const JOBS = [
   { name: "drain-outbox",       module: "./drain-outbox" }
 ];
 
-function authorised(req) {
-  const header = String((req.headers && req.headers.authorization) || "");
-  const token  = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
-  if (!token) return false;
-  if (CRON_SECRET && token === CRON_SECRET) return true;
-  if (ADMIN_API_TOKEN && token === ADMIN_API_TOKEN) return true;
-  return false;
-}
+/* Read per request; compared in constant time (see _lib/auth.js). */
+function authorised(req) { return auth.bearerMatches(req, JOB_TOKENS); }
 
 /* Captures a job's response instead of sending it, so several handlers can run
    inside one request. Mirrors just enough of the response contract for the
@@ -71,7 +65,7 @@ module.exports = async function handler(req, res) {
     return http.fail(res, 405, "method_not_allowed", http.MESSAGES.method_not_allowed);
   }
 
-  if (!CRON_SECRET && !ADMIN_API_TOKEN) {
+  if (!auth.anyConfigured(JOB_TOKENS)) {
     console.error("[jobs/maintenance] refusing — set CRON_SECRET or ADMIN_API_TOKEN");
     return http.fail(res, 503, "job_not_configured",
       "This job is not configured. Set CRON_SECRET (or ADMIN_API_TOKEN) to enable it.");
@@ -108,6 +102,17 @@ module.exports = async function handler(req, res) {
       results[job.name] = { status: 500, ok: false, error: "job_threw" };
       anyFailed = true;
     }
+  }
+
+  // Housekeeping: expired verification challenges drop any payload they held
+  // (a pending registration's password hash) and any code hash.
+  try {
+    const purged = await require("../_lib/verification").purgeExpired();
+    results["purge-verification-challenges"] = { status: 200, ok: true, summary: { purged: purged } };
+  } catch (err) {
+    console.error("[jobs/maintenance] purge-verification-challenges failed:", err && err.message);
+    results["purge-verification-challenges"] = { status: 500, ok: false, error: "purge_failed" };
+    anyFailed = true;
   }
 
   return http.ok(res, {

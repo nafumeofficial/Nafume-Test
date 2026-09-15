@@ -1,27 +1,34 @@
-﻿/*
- * POST /api/account/register  —  create a NAFUME customer account
+/*
+ * POST /api/account/register  —  step 1 of creating a NAFUME account
  * ============================================================================
  * This is the endpoint behind "Create your account to track this order".
  *
- * The post-checkout case is the important one: the customer already exists as a
- * row (guest checkout created it), so registering ATTACHES credentials to that
- * existing customer instead of creating a second record. Their order history is
- * therefore correct from the very first login, with nothing to re-enter.
+ * It does NOT create credentials, does NOT touch any existing customer record
+ * and does NOT start a session. Anyone can type someone else's email or phone,
+ * so registration first proves control of one identifier:
  *
- * Body: { name, email, phone, password }
- * Sets an HttpOnly session cookie on success — the customer is logged straight
- * in rather than being asked to sign in again.
+ *   1. POST /api/account/register  { name, email, phone, password, verifyVia? }
+ *        validates, refuses an existing account, hashes the password into a
+ *        short-lived verification challenge, and sends a 6-digit code to the
+ *        EMAIL (default) or, with verifyVia:"phone", by SMS.
+ *        → { verificationRequired: true, challengeId, channel, destination }
+ *   2. POST /api/account/verify  { challengeId, code }
+ *        consumes the challenge, then creates the account on the proven
+ *        identifier, links only the orders placed with that identifier, and
+ *        signs the customer in. See _lib/accounts.js.
  *
- * Passwords are hashed with scrypt (api/_lib/auth.js) and never stored,
- * returned, or logged in plaintext.
+ * Passwords are hashed with scrypt (api/_lib/auth.js) before they are stored
+ * anywhere, including the challenge, and are never returned or logged.
  */
 "use strict";
 
-const http     = require("../_lib/http");
-const validate = require("../_lib/validate");
-const auth     = require("../_lib/auth");
-const repo     = require("../_lib/repo");
-const db       = require("../_lib/db");
+const http         = require("../_lib/http");
+const validate     = require("../_lib/validate");
+const auth         = require("../_lib/auth");
+const repo         = require("../_lib/repo");
+const verification = require("../_lib/verification");
+
+const ACCOUNT_EXISTS = "An account already exists with these details. Please log in instead.";
 
 module.exports = async function handler(req, res) {
   if (!http.guard(req, res, "POST")) return;
@@ -41,6 +48,7 @@ module.exports = async function handler(req, res) {
   const emailDisp = validate.displayEmail(body.email);
   const phone     = validate.normalizePhone(body.phone);
   const pw        = validate.checkPassword(body.password);
+  const channel   = body.verifyVia === "phone" ? "phone" : "email";
 
   if (!name)  e.add("name",  "Please enter your full name.");
   if (!email) e.add("email", "Please enter a valid email address.");
@@ -52,73 +60,35 @@ module.exports = async function handler(req, res) {
   }
 
   try {
-    /* ── existing account? ──────────────────────────────────────────────── */
-    const existing = await repo.findCustomer(email, phone);
-
-    if (existing) {
-      const credentials = await db.selectOne("customer_auth", { customer_id: existing.id });
-      if (credentials) {
-        return http.fail(res, 409, "account_exists",
-          "An account already exists with these details. Please log in instead.",
-          { canLogin: true });
-      }
+    /* ── an account already on the identifier being proven? ─────────────── */
+    const proven = channel === "email" ? email : phone;
+    const holder = channel === "email"
+      ? await repo.findCustomer(proven, null)
+      : await repo.findCustomer(null, proven);
+    if (holder && await repo.hasCredentials(holder.id)) {
+      return http.fail(res, 409, "account_exists", ACCOUNT_EXISTS, { canLogin: true });
     }
 
-    /* ── customer row (reuse the guest-checkout record when there is one) ── */
-    const found = existing
-      ? { customer: existing }
-      : await repo.findOrCreateCustomer({
-          name: name, email: emailDisp, emailNormalized: email,
-          phone: phone, phoneNormalized: phone,
-          source: "account_registration", hasAccount: true
-        });
-
-    const customer = found.customer;
-
-    // Fill in anything the account form supplies that the guest record lacked.
-    const patch = { has_account: true };
-    if (name && name !== customer.name) patch.name = name;
-    if (email && !customer.email_normalized) { patch.email = emailDisp; patch.email_normalized = email; }
-    if (phone && !customer.phone_normalized) { patch.phone = phone;     patch.phone_normalized = phone; }
-    const updatedCustomer = (await repo.updateCustomer(customer.id, patch)) || customer;
-
-    /* ── credentials ────────────────────────────────────────────────────── */
     const passwordHash = await auth.hashPassword(body.password);
-    const now = db.nowISO();
-    try {
-      await db.insert("customer_auth", {
-        id:              db.newId(),
-        customer_id:     customer.id,
-        password_hash:   passwordHash,
-        failed_attempts: 0,
-        locked_until:    null,
-        created_at:      now,
-        updated_at:      now
-      });
-    } catch (err) {
-      if (err instanceof db.UniqueViolationError) {
-        // Two registrations raced; the other one won.
-        return http.fail(res, 409, "account_exists",
-          "An account already exists with these details. Please log in instead.", { canLogin: true });
-      }
-      throw err;
+
+    const started = await verification.start({
+      purpose:    "account_register",
+      channel:    channel,
+      identifier: proven,
+      payload:    { name: name, email: email, emailDisplay: emailDisp, phone: phone, passwordHash: passwordHash }
+    });
+
+    if (!started.ok) {
+      return http.fail(res, started.status, started.code, started.message,
+        started.retryAfterSeconds ? { retryAfterSeconds: started.retryAfterSeconds } : undefined);
     }
 
-    /* ── link any orders that were not already attached ─────────────────── */
-    const linked = await repo.attachOrphanOrders(updatedCustomer);
-
-    /* ── log them in ────────────────────────────────────────────────────── */
-    const session = await auth.createSession(customer.id, "password");
-    auth.setSessionCookie(req, res, session.token);
-
-    const orders = await repo.getOrdersForCustomer(customer.id, 20);
-
-    return http.ok(res, {
-      customer:    auth.publicCustomer(updatedCustomer),
-      orderCount:  orders.length,
-      ordersLinked: linked,
-      message:     "Your NAFUME account is ready."
-    });
+    return http.ok(res, Object.assign({
+      verificationRequired: true,
+      message: channel === "email"
+        ? "We've emailed a 6-digit code to " + started.challenge.destination + ". Enter it to finish creating your account."
+        : "We've texted a 6-digit code to " + started.challenge.destination + ". Enter it to finish creating your account."
+    }, started.challenge));
 
   } catch (err) {
     return http.handleError(res, err, "account/register");

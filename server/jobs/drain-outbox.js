@@ -27,21 +27,14 @@
 const http      = require("../_lib/http");
 const db        = require("../_lib/db");
 const messaging = require("../_lib/messaging");
+const auth      = require("../_lib/auth");
 
-const CRON_SECRET     = process.env.CRON_SECRET;
-const ADMIN_API_TOKEN = process.env.ADMIN_API_TOKEN;
-
+const JOB_TOKENS   = ["CRON_SECRET", "ADMIN_API_TOKEN"];
 const MAX_ATTEMPTS = 5;
 const BATCH_LIMIT  = 40;
 
-function authorised(req) {
-  const header = String((req.headers && req.headers.authorization) || "");
-  const token  = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
-  if (!token) return false;
-  if (CRON_SECRET && token === CRON_SECRET) return true;
-  if (ADMIN_API_TOKEN && token === ADMIN_API_TOKEN) return true;
-  return false;
-}
+/* Read per request; compared in constant time (see _lib/auth.js). */
+function authorised(req) { return auth.bearerMatches(req, JOB_TOKENS); }
 
 module.exports = async function handler(req, res) {
   if (req.method === "OPTIONS") { res.status(204).end(); return; }
@@ -50,7 +43,7 @@ module.exports = async function handler(req, res) {
     return http.fail(res, 405, "method_not_allowed", http.MESSAGES.method_not_allowed);
   }
 
-  if (!CRON_SECRET && !ADMIN_API_TOKEN) {
+  if (!auth.anyConfigured(JOB_TOKENS)) {
     console.error("[jobs/drain-outbox] refusing — set CRON_SECRET or ADMIN_API_TOKEN");
     return http.fail(res, 503, "job_not_configured",
       "This job is not configured. Set CRON_SECRET (or ADMIN_API_TOKEN) to enable it.");
@@ -98,7 +91,9 @@ module.exports = async function handler(req, res) {
         summary.givenUp++;
         continue;
       }
-      if (!row.to_address || row.error === "invalid_recipient") {
+      // Redacted rows (verification codes) are never re-sent: the customer
+      // simply requests a new code.
+      if (!row.to_address || row.error === "invalid_recipient" || row.body === messaging.REDACTED_BODY) {
         summary.givenUp++;
         continue;
       }

@@ -1,0 +1,20 @@
+# Files that must never be uploaded to Vercel.
+#
+# Without this, Vercel serves every repository file as a public static asset:
+# the test suite, the database schema and internal audit notes were all
+# downloadable from the deployed site.
+#
+# server/ is NOT listed: api/index.js bundles it into the function. Public
+# requests to /server/* are blocked by the redirects in vercel.json instead.
+
+test/
+db/
+docs/
+ref/
+_archive/
+_backup*/
+.claude/
+.claudeignore
+*.md
+.env*
+!.env.example

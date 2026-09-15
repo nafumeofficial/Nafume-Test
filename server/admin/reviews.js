@@ -19,29 +19,20 @@
  */
 "use strict";
 
-const crypto   = require("crypto");
 const http     = require("../_lib/http");
 const validate = require("../_lib/validate");
 const db       = require("../_lib/db");
-
-const ADMIN_API_TOKEN = process.env.ADMIN_API_TOKEN;
+const auth     = require("../_lib/auth");
 
 const STATUSES = ["pending", "published", "hidden"];
 
-function tokenMatches(req) {
-  if (!ADMIN_API_TOKEN) return false;
-  const header = String((req.headers && req.headers.authorization) || "");
-  const given  = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
-  if (!given) return false;
-  const a = Buffer.from(given);
-  const b = Buffer.from(ADMIN_API_TOKEN);
-  return a.length === b.length && crypto.timingSafeEqual(a, b);
-}
+/* Read per request; compared in constant time (see _lib/auth.js). */
+function tokenMatches(req) { return auth.bearerMatches(req, ["ADMIN_API_TOKEN"]); }
 
 module.exports = async function handler(req, res) {
   if (req.method === "OPTIONS") { res.status(204).end(); return; }
 
-  if (!ADMIN_API_TOKEN) {
+  if (!auth.anyConfigured(["ADMIN_API_TOKEN"])) {
     console.error("[admin/reviews] refusing — ADMIN_API_TOKEN is not set");
     return http.fail(res, 503, "admin_not_configured",
       "Admin API is not configured. Set ADMIN_API_TOKEN to enable it.");

@@ -85,10 +85,17 @@ const UNIQUE_KEYS = {
   quiz_responses:       [],
   reviews:              [["order_id", "product_id"]],
   marketing_consent:    [["customer_id", "channel"]],
-  review_requests:      [["order_id"]],
+  review_requests:      [["order_id"], ["access_token_hash"]],
   outbound_messages:    [],
-  discount_redemptions: [["code", "order_id"]],
-  rate_limits:          [["bucket", "window_start"]]
+  // slot_key is non-null only while a redemption holds an allowance slot, so
+  // UNIQUE(slot_key) stops two parallel checkouts spending the same reward.
+  discount_redemptions: [["code", "order_id"], ["slot_key"]],
+  rate_limits:          [["bucket", "window_start"]],
+  // live_key is non-null only while a challenge can still be used, so there is
+  // at most one live challenge per (purpose, channel, identifier).
+  verification_challenges: [["live_key"]],
+  // One row per provider event id: a redelivered webhook is recognised.
+  payment_events:       [["event_key"]]
 };
 
 const TABLES = Object.keys(UNIQUE_KEYS);
@@ -271,9 +278,22 @@ function buildQuery(opts) {
   return params.length ? "?" + params.join("&") : "";
 }
 
+/* supabaseAuthHeaders(key)
+   Supabase's current secret keys (sb_secret_…) are not JWTs and belong on the
+   `apikey` header only — sending one as `Authorization: Bearer` fails JWT
+   verification. The legacy service_role key IS a JWT and keeps the historic
+   pair of headers. https://supabase.com/docs/guides/api/api-keys             */
+function supabaseAuthHeaders(key) {
+  const k = String(key || "");
+  const isJwt = /^eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(k);
+  return isJwt ? { "apikey": k, "Authorization": "Bearer " + k } : { "apikey": k };
+}
+
 function createSupabaseDriver(baseUrl, serviceKey, timeoutMs) {
   const root = String(baseUrl).replace(/\/+$/, "") + "/rest/v1/";
   const TIMEOUT = timeoutMs || 10000;
+
+  const headersBase = supabaseAuthHeaders(serviceKey);
 
   async function request(method, path, body, extraPrefer) {
     const ctrl  = new AbortController();
@@ -284,13 +304,11 @@ function createSupabaseDriver(baseUrl, serviceKey, timeoutMs) {
     try {
       resp = await fetch(root + path, {
         method:  method,
-        headers: {
-          "apikey":        serviceKey,
-          "Authorization": "Bearer " + serviceKey,
+        headers: Object.assign({
           "Content-Type":  "application/json",
           "Prefer":        prefer,
           "Accept":        "application/json"
-        },
+        }, headersBase),
         body:   body === undefined ? undefined : JSON.stringify(body),
         signal: ctrl.signal
       });
@@ -368,6 +386,15 @@ function resolveDriver() {
   const key      = String(process.env.SUPABASE_SERVICE_ROLE_KEY || "").trim();
 
   if (explicit === "memory") {
+    // The memory driver is per-process and vanishes on every cold start. A
+    // hosted deployment must never run on it, whatever the variable says:
+    // refusing storage makes checkout answer 503 instead of "saving" orders
+    // that disappear minutes later.
+    if (isHostedRuntime()) {
+      console.error("[db] NAFUME_DB_DRIVER=memory refused on a hosted deployment — configure Supabase.");
+      _driver = null;
+      return _driver;
+    }
     _driver = createMemoryDriver(process.env.NAFUME_DB_FILE || null);
     return _driver;
   }
@@ -383,8 +410,28 @@ function resolveDriver() {
 /* Test/dev hook: lets the local harness swap drivers between cases. */
 function _resetDriverCache() { _driver = undefined; _resolved = false; }
 
+/* True on Vercel (any environment) or when NODE_ENV=production. */
+function isHostedRuntime() {
+  return !!String(process.env.VERCEL || "").trim() ||
+         String(process.env.NODE_ENV || "").trim().toLowerCase() === "production";
+}
+
 function isConfigured() { return !!resolveDriver(); }
 function driverName()   { const d = resolveDriver(); return d ? d.name : "none"; }
+/* deriveServerKey(label) -> Buffer | null
+   A key derived from the service-role secret for server-side HMACs (e.g.
+   stored verification codes). The secret itself never leaves this module;
+   callers get HMAC_SHA256(secret, label), distinct per label. */
+function deriveServerKey(label) {
+  const k = String(process.env.SUPABASE_SERVICE_ROLE_KEY || "").trim();
+  if (!k) return null;
+  return crypto.createHmac("sha256", k).update("nafume-derived|" + String(label)).digest();
+}
+
+/* Explains a null driver, for the health report. */
+function memoryDriverRefused() {
+  return String(process.env.NAFUME_DB_DRIVER || "").trim().toLowerCase() === "memory" && isHostedRuntime();
+}
 
 function requireDriver() {
   const d = resolveDriver();
@@ -417,8 +464,9 @@ function nowISO() { return new Date().toISOString(); }
 module.exports = {
   select, selectOne, insert, update, count,
   newId, nowISO,
-  isConfigured, driverName,
+  isConfigured, driverName, memoryDriverRefused, isHostedRuntime,
   DbNotConfiguredError, DbError, UniqueViolationError,
   UNIQUE_KEYS, TABLES,
+  supabaseAuthHeaders, deriveServerKey,
   _resetDriverCache
 };

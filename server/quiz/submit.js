@@ -83,7 +83,9 @@ module.exports = async function handler(req, res) {
     }
 
     /* ── 2. link to a customer when this email already belongs to one ───── */
-    // A logged-in visitor's own session takes priority; otherwise match by email.
+    // A logged-in visitor's own session takes priority; otherwise match by email
+    // for segmentation only. Consent is NEVER changed on a matched record
+    // without a session: typing someone's email must not opt them in or out.
     let customerId = null;
     const session = await auth.getSession(req);
     if (session) {
@@ -113,8 +115,19 @@ module.exports = async function handler(req, res) {
     await db.insert("quiz_responses", response);
 
     /* ── 4. optional marketing consent ──────────────────────────────────── */
-    if (customerId && body.marketingOptIn !== undefined) {
-      await repo.setMarketingConsent(customerId, "email", body.marketingOptIn === true, "quiz");
+    if (body.marketingOptIn !== undefined) {
+      if (session) {
+        await repo.setMarketingConsent(session.customer.id, "email", body.marketingOptIn === true, "quiz");
+      } else if (lead) {
+        // A guest's choice is recorded against the lead (the email they typed),
+        // with a timestamp, and is not applied to any customer record.
+        await db.update("leads", {
+          where: { id: lead.id },
+          set:   { metadata: Object.assign({}, lead.metadata, { lastTags: result.tags,
+                     emailMarketingOptIn: body.marketingOptIn === true, emailMarketingOptInAt: now }),
+                   updated_at: now }
+        });
+      }
     }
 
     /* ── 5. email the result (best effort, reported honestly) ───────────── */

@@ -167,13 +167,17 @@
        Backed by the server session (HttpOnly cookie), not localStorage:
          GET  /api/account/me       who am I + my orders
          POST /api/account/login    email or phone + password
-         POST /api/otp/verify       phone OTP — also issues a real session, so
-                                    both routes resolve to the SAME customer
+         POST /api/otp/send|verify  phone code sign-in, bound to a server-side
+                                    challenge (expiring, single-use)
          POST /api/account/logout   revokes the session server-side
          POST /api/account/update   profile / address / marketing consent
+         POST /api/account/identifiers  verify an email or mobile with a code;
+                                    this is also how earlier purchases made
+                                    with another email/number are linked
 
-       Order history comes from the database, so it is correct on any device,
-       not just the browser the order was placed in.
+       Order history comes from the database and shows only orders this
+       account owns (placed while signed in, or placed with a verified email
+       or mobile), so it is correct on any device and never someone else's.
        ─────────────────────────────────────────────────────────────────────── -->
   <script>
     (function () {
@@ -307,6 +311,18 @@
         wireOtp();
       }
 
+      /* After signing in, return to the page that sent the customer here (e.g.
+         the review form). Only same-site /pages/ paths are honoured, so this
+         cannot be used as an open redirect. */
+      function afterSignIn() {
+        var next = new URLSearchParams(window.location.search).get("next") || "";
+        if (/^\/pages\/[A-Za-z0-9/_.-]+(\?[A-Za-z0-9=&%_.-]*)?$/.test(next) && next.indexOf("//") === -1) {
+          window.location.href = next;
+          return;
+        }
+        refresh();
+      }
+
       function setStatus(id, message, kind, html) {
         var box = document.getElementById(id);
         if (!box) return;
@@ -345,7 +361,7 @@
               setStatus("login-status", res.message || "Sign in failed. Please try again.", "error");
               return;
             }
-            refresh();
+            afterSignIn();
           });
         });
       }
@@ -357,6 +373,7 @@
         var resendBtn = document.getElementById("otp-resend");
         var countdown = document.getElementById("otp-countdown");
         var timer = null;
+        var challengeId = null;
 
         function startCountdown(secs) {
           resendBtn.disabled = true;
@@ -385,8 +402,10 @@
             button.textContent = idleLabel;
             if (!res.ok) {
               setStatus("otp-status", res.message || "We couldn't send the code. Please try again.", "error");
+              if (res.data && res.data.cooldownSeconds) startCountdown(res.data.cooldownSeconds);
               return;
             }
+            challengeId = res.data.challengeId;
             document.getElementById("otp-step-phone").style.display = "none";
             document.getElementById("otp-step-code").style.display = "";
             setStatus("otp-status", "Code sent to +91 " + phone + ".", "info");
@@ -409,7 +428,7 @@
           verifyBtn.disabled = true;
           verifyBtn.textContent = "Verifying…";
 
-          API.post("/api/otp/verify", { phone: phone, otp: code }).then(function (res) {
+          API.post("/api/otp/verify", { phone: phone, otp: code, challengeId: challengeId }).then(function (res) {
             verifyBtn.disabled = false;
             verifyBtn.textContent = "Verify & sign in";
             if (!res.ok) {
@@ -424,7 +443,7 @@
               return;
             }
             clearInterval(timer);
-            refresh();
+            afterSignIn();
           });
         });
 
@@ -472,10 +491,33 @@
                   '</div>' +
                   '<div class="text-xs text-text-secondary space-y-1.5">' +
                     '<p><strong class="text-primary">Name:</strong> ' + (esc(c.name) || "—") + '</p>' +
-                    '<p><strong class="text-primary">Phone:</strong> ' + (esc(c.phone) || "—") + '</p>' +
-                    '<p><strong class="text-primary">Email:</strong> ' + (esc(c.email) || "—") + '</p>' +
+                    '<p><strong class="text-primary">Phone:</strong> ' + (esc(c.phone) || "—") + ' ' + verifiedBadge(c.phone, c.phoneVerified) + '</p>' +
+                    '<p><strong class="text-primary">Email:</strong> ' + (esc(c.email) || "—") + ' ' + verifiedBadge(c.email, c.emailVerified) + '</p>' +
                     '<p><strong class="text-primary">WhatsApp updates:</strong> ' +
                       (current.consent.whatsapp ? "Subscribed" : "Not subscribed") + '</p>' +
+                  '</div>' +
+                '</div>' +
+                '<div class="bg-white border border-border-muted p-6" id="acct-verify-box">' +
+                  '<h3 class="text-label-sm font-bold uppercase tracking-widest text-primary pb-2 border-b border-border-muted mb-4">Verify &amp; link orders</h3>' +
+                  '<p class="text-xs text-text-secondary font-light leading-relaxed mb-3">' +
+                    'Orders appear here once we know they are yours. Verify the email or mobile number you used ' +
+                    'at checkout — including a different one — and those orders are added to this account.</p>' +
+                  '<p class="nf-auth-status" id="verify-status" role="status" aria-live="polite" style="display:none;"></p>' +
+                  '<div id="verify-step-start">' +
+                    '<div class="grid grid-cols-1 sm:grid-cols-3 gap-2 items-end">' +
+                      '<div><label class="nf-auth-label" for="vf-channel">Type</label>' +
+                        '<select id="vf-channel" class="nf-auth-input"><option value="email">Email</option><option value="phone">Mobile</option></select></div>' +
+                      '<div class="sm:col-span-2"><label class="nf-auth-label" for="vf-value">Email or mobile</label>' +
+                        '<input id="vf-value" class="nf-auth-input" type="text" autocomplete="off"/></div>' +
+                    '</div>' +
+                    '<button type="button" class="nf-auth-submit" id="vf-send" style="margin-top:12px;">Send code</button>' +
+                  '</div>' +
+                  '<div id="verify-step-code" style="display:none;">' +
+                    '<label class="nf-auth-label" for="vf-code">6-digit code</label>' +
+                    '<input id="vf-code" class="nf-auth-input" type="text" inputmode="numeric" maxlength="6" autocomplete="one-time-code" ' +
+                      'placeholder="······" style="letter-spacing:0.3em;text-align:center;"/>' +
+                    '<button type="button" class="nf-auth-submit" id="vf-confirm" style="margin-top:12px;">Verify</button>' +
+                    '<p class="nf-auth-alt"><button type="button" id="vf-cancel" style="background:none;border:none;text-decoration:underline;color:#111;font-size:12.5px;">Cancel</button></p>' +
                   '</div>' +
                 '</div>' +
                 '<div class="bg-white border border-border-muted p-6">' +
@@ -490,6 +532,8 @@
           '</div>';
 
         renderOrders();
+        wireVerification();
+        if (current.flash) { setStatus("acct-status", current.flash, "success"); current.flash = null; }
 
         document.getElementById("acct-logout").addEventListener("click", function () {
           var btn = this;
@@ -499,6 +543,73 @@
         document.getElementById("acct-edit").addEventListener("click", renderEditForm);
       }
 
+      function verifiedBadge(value, verified) {
+        if (!value) return "";
+        return verified
+          ? '<span class="text-[10px] uppercase tracking-wider text-[#2e7d32]">Verified</span>'
+          : '<span class="text-[10px] uppercase tracking-wider text-accent-bronze">Not verified</span>';
+      }
+
+      /* Verify an email/mobile with a code. The server links any orders placed
+         with it that nobody has claimed, and refuses — rather than merges — one
+         already verified on another account. */
+      function wireVerification() {
+        var c = current.customer || {};
+        var channelEl = document.getElementById("vf-channel");
+        var valueEl   = document.getElementById("vf-value");
+        var sendBtn   = document.getElementById("vf-send");
+        var confirmBtn = document.getElementById("vf-confirm");
+        var pendingChallenge = null;
+
+        // Suggest whatever is still unverified.
+        if (c.email && !c.emailVerified) { channelEl.value = "email"; valueEl.value = c.email; }
+        else if (c.phone && !c.phoneVerified) { channelEl.value = "phone"; valueEl.value = c.phone; }
+
+        function showStart() {
+          document.getElementById("verify-step-start").style.display = "";
+          document.getElementById("verify-step-code").style.display = "none";
+        }
+
+        sendBtn.addEventListener("click", function () {
+          hideStatus("verify-status");
+          var value = valueEl.value.trim();
+          if (!value) { setStatus("verify-status", "Enter the email or mobile number to verify.", "error"); return; }
+          sendBtn.disabled = true; sendBtn.textContent = "Sending…";
+          API.startIdentifierVerification(channelEl.value, value).then(function (res) {
+            sendBtn.disabled = false; sendBtn.textContent = "Send code";
+            if (!res.ok) { setStatus("verify-status", res.message || "We couldn't send a code.", "error"); return; }
+            if (res.data.alreadyVerified) { setStatus("verify-status", res.data.message, "success"); return; }
+            pendingChallenge = res.data.challengeId;
+            document.getElementById("verify-step-start").style.display = "none";
+            document.getElementById("verify-step-code").style.display = "";
+            setStatus("verify-status", res.data.message, "info");
+            try { document.getElementById("vf-code").focus(); } catch (e) {}
+          });
+        });
+
+        confirmBtn.addEventListener("click", function () {
+          var code = document.getElementById("vf-code").value.replace(/\D/g, "");
+          if (code.length !== 6) { setStatus("verify-status", "Please enter the 6-digit code.", "error"); return; }
+          confirmBtn.disabled = true; confirmBtn.textContent = "Checking…";
+          API.confirmIdentifierVerification(pendingChallenge, code).then(function (res) {
+            confirmBtn.disabled = false; confirmBtn.textContent = "Verify";
+            if (!res.ok) {
+              setStatus("verify-status", res.message || "That code didn't work.", "error");
+              if (res.data && /challenge_|too_many/.test(res.data.error || "")) showStart();
+              return;
+            }
+            current.flash = res.data.message || "Verified.";
+            refresh();
+          });
+        });
+
+        document.getElementById("vf-cancel").addEventListener("click", function () {
+          pendingChallenge = null;
+          hideStatus("verify-status");
+          showStart();
+        });
+      }
+
       function renderOrders() {
         var box = document.getElementById("acct-orders");
         if (!box) return;
@@ -506,7 +617,8 @@
         if (!current.orders.length) {
           box.innerHTML =
             '<div class="bg-white border border-border-muted p-6 text-center text-sm text-text-secondary">' +
-              'No orders yet. Once you place one, it will appear here automatically.' +
+              'No orders here yet. Orders placed while signed in appear automatically; for earlier orders, ' +
+              'verify the email or mobile you used at checkout.' +
               '<div class="mt-4"><a href="../collections/shop.html" class="inline-block bg-primary text-white px-6 py-3 text-[11px] font-semibold uppercase tracking-widest hover:bg-[#222]">Shop New Launches</a></div>' +
             '</div>';
           return;
@@ -562,11 +674,11 @@
         var c = current.customer;
         var a = c.address || {};
 
-        function field(label, id, value, type) {
+        function field(label, id, value, type, readOnly) {
           return '<div>' +
             '<label class="nf-auth-label" for="' + id + '">' + label + '</label>' +
             '<input id="' + id + '" type="' + (type || "text") + '" value="' + esc(value || "") +
-              '" class="nf-auth-input"/>' +
+              '" class="nf-auth-input"' + (readOnly ? ' readonly aria-readonly="true" style="opacity:.7;"' : '') + '/>' +
           '</div>';
         }
 
@@ -576,10 +688,11 @@
           '<p class="nf-auth-status" id="edit-status" role="status" style="display:none;"></p>' +
           '<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">' +
             field("Name", "ed-name", c.name) +
-            field("Phone", "ed-phone", c.phone, "tel") +
-            field("Email", "ed-email", c.email, "email") +
+            field("Phone", "ed-phone", c.phone, "tel", true) +
+            field("Email", "ed-email", c.email, "email", true) +
             field("PIN code", "ed-pin", a.pincode) +
           '</div>' +
+          '<p class="nf-review-hint" style="margin-top:6px;">To change your email or mobile, verify the new one under “Verify &amp; link orders”.</p>' +
           '<div class="mt-4">' + field("Address line 1", "ed-a1", a.line1) + '</div>' +
           '<div class="mt-4">' + field("Address line 2", "ed-a2", a.line2) + '</div>' +
           '<div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">' +
@@ -611,8 +724,6 @@
 
           API.updateAccount({
             name:  document.getElementById("ed-name").value,
-            phone: document.getElementById("ed-phone").value,
-            email: document.getElementById("ed-email").value,
             address: {
               line1:   document.getElementById("ed-a1").value,
               line2:   document.getElementById("ed-a2").value,

@@ -1,4 +1,4 @@
-﻿/*
+/*
  * POST /api/orders/create-cod  —  Cash-on-Delivery order
  * ============================================================================
  * WHY THIS EXISTS
@@ -27,6 +27,7 @@ const repo      = require("../_lib/repo");
 const db        = require("../_lib/db");
 const discounts = require("../_lib/discounts");
 const auth      = require("../_lib/auth");
+const checkout  = require("../_lib/checkout");
 
 const DUPLICATE_WINDOW_MS = 2 * 60 * 1000;
 
@@ -50,6 +51,13 @@ module.exports = async function handler(req, res) {
 
   const giftingRequested = body.giftingAddOn === true;
 
+  let session;
+  try {
+    session = await auth.getSession(req);
+  } catch (err) {
+    return http.handleError(res, err, "orders/create-cod");
+  }
+
   /* Promo code — re-validated server-side, exactly as in the Razorpay path.
      `prepaid: false` matters: a COD order gets no prepaid discount, so the
      promo is calculated on a larger base and the arithmetic must not be
@@ -58,7 +66,6 @@ module.exports = async function handler(req, res) {
   const requestedCode = validate.clean(body.discountCode, 40);
   if (requestedCode) {
     try {
-      const session = await auth.getSession(req);
       discountQuote = await discounts.quote(requestedCode, {
         priced:        priced,
         prepaid:       false,
@@ -90,23 +97,15 @@ module.exports = async function handler(req, res) {
   const notes         = validate.cleanMultiline(body.notes, 500);
 
   try {
-    const found = await repo.findOrCreateCustomer({
-      name:            shipping.value.name,
-      email:           shipping.value.email,
-      emailNormalized: shipping.value.emailNormalized,
-      phone:           shipping.value.phone,
-      phoneNormalized: shipping.value.phoneNormalized,
-      line1:           shipping.value.line1,
-      line2:           shipping.value.line2,
-      city:            shipping.value.city,
-      state:           shipping.value.state,
-      pincode:         shipping.value.pincode,
-      source:          "checkout_cod"
-    });
+    const placed = await checkout.checkoutCustomer(session, shipping.value, "checkout_cod");
+    const found  = { customer: placed.customer };
+    const s      = shipping.value;
 
     /* ── duplicate guard ─────────────────────────────────────────────────
        A double-click sends two identical requests moments apart. Rather than
-       creating two orders, return the one that already exists.              */
+       creating two orders, return the one that already exists — but only when
+       EVERY typed detail matches, so this can never hand one person's order
+       (and address) back to someone who merely typed the same email.        */
     const recent = await db.select("orders", {
       where: { customer_id: found.customer.id, checkout_type: "cod" },
       order: { column: "created_at", ascending: false },
@@ -117,6 +116,9 @@ module.exports = async function handler(req, res) {
       const r = recent[i];
       if (new Date(r.created_at).getTime() < cutoff) continue;
       if (r.amount_total !== totals.total) continue;
+      if (r.ship_phone !== s.phone || (r.ship_email_normalized || "") !== (s.emailNormalized || "") ||
+          r.ship_line1 !== s.line1 || r.ship_pincode !== s.pincode || r.ship_name !== s.name ||
+          (r.placed_by_customer_id || null) !== (placed.sessionCustomerId || null)) continue;
       const items = await repo.getOrderItems(r.id);
       const sameCart = items.length === priced.lines.length && priced.lines.every(function (l) {
         return items.some(function (it) {
@@ -139,6 +141,8 @@ module.exports = async function handler(req, res) {
     const order = await repo.createPendingOrder({
       orderId:       orderId,
       customerId:    found.customer.id,
+      placedByCustomerId: placed.sessionCustomerId,
+      verifiedOwnerCustomerId: repo.ownerAtCreation(found.customer, s, placed.sessionCustomerId),
       shipping:      shipping.value,
       lines:         priced.lines,
       totals:        totals,
@@ -164,19 +168,27 @@ module.exports = async function handler(req, res) {
     // A confirmed COD order commits the discount immediately — there is no
     // later payment event to hook, and the customer is getting the goods.
     if (discountQuote && discountQuote.ok) {
-      await discounts.recordRedemption({
+      const claim = await discounts.recordRedemption({
         code:           discountQuote.code,
-        customerId:     found.customer.id,
+        customerId:     discountQuote.identity.customerId || found.customer.id,
         orderId:        orderId,
         orderUuid:      finalOrder.id,
         subtotalBefore: totals.subtotal,
         discountAmount: totals.promoDiscount,
-        finalAmount:    totals.total
+        finalAmount:    totals.total,
+        allowance:      discountQuote.allowance
       });
+      if (!claim.ok) {
+        await discounts.cancelUnpaidOrder(finalOrder.id);
+        return http.fail(res, 409, "discount_unavailable",
+          "That code was just used on another order. Please refresh your cart and try again.");
+      }
       await discounts.markRedeemed(orderId);
     }
 
-    await repo.setMarketingConsent(found.customer.id, "whatsapp", whatsappOptIn, "checkout");
+    if (placed.recordConsent) {
+      await repo.setMarketingConsent(found.customer.id, "whatsapp", whatsappOptIn, "checkout");
+    }
 
     const items = await repo.getOrderItems(finalOrder.id);
 
