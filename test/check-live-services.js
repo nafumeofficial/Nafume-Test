@@ -148,6 +148,9 @@ async function checkSupabase() {
   if (migrationOk) {
     const applied = await db.selectOne("schema_migrations", { version: "20260915_launch_readiness" }).catch(function () { return null; });
     ok("migration 20260915_launch_readiness is recorded", !!applied);
+    const viewLocked = await db.selectOne("schema_migrations", { version: "20261022_secure_broadcast_view" }).catch(function () { return null; });
+    ok("migration 20261022_secure_broadcast_view is recorded", !!viewLocked,
+       "Apply db/migrations/20261022_secure_broadcast_view.sql — until then the anon key can read whatsapp_broadcast_audience.");
   }
   if (!migrationOk) return false;
 

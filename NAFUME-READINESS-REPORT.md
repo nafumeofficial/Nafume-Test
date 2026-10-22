@@ -295,7 +295,7 @@ Record evidence (screenshot, SQL row or Razorpay/Resend event) for each.
 
 ### Prepared changes (need your explicit approval)
 1. Merge the branch into `main` of the repo that serves `www.nafume.com` (`nafumeofficial/Nafume` → project `nafume`). This **deploys to live traffic**.
-2. Production Supabase project: new → run `db/schema.sql`. If one already exists with data → back up, check `schema_migrations`, apply `db/migrations/20260915_launch_readiness.sql`.
+2. Production Supabase project: new → run `db/schema.sql`. If one already exists with data → back up, check `schema_migrations`, apply `db/migrations/20260915_launch_readiness.sql` then `db/migrations/20261022_secure_broadcast_view.sql`.
 3. Production variables in project `nafume` → **Production** scope:
    - **Razorpay:** LIVE keys and a separate **Live-mode** webhook with the same events.
    - **Email:** the Resend key and verified senders.

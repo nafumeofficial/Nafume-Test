@@ -497,3 +497,20 @@ CREATE OR REPLACE VIEW whatsapp_broadcast_audience AS
     AND mc.opted_in = TRUE
     AND mc.revoked_at IS NULL
     AND c.phone_normalized IS NOT NULL;
+
+-- ── 20261022_secure_broadcast_view ──────────────────────────────────────────
+-- Identical to db/migrations/20261022_secure_broadcast_view.sql. A view runs
+-- with its owner's privileges (skipping RLS), and Supabase grants anon SELECT
+-- on new objects, so without this the view above is readable with the anon key.
+-- Kept after the CREATE OR REPLACE because replacing a view resets its options.
+DO $$
+BEGIN
+  IF (SELECT count(*) FROM pg_roles WHERE rolname IN ('anon', 'authenticated')) = 2 THEN
+    REVOKE ALL ON whatsapp_broadcast_audience FROM anon, authenticated;
+  END IF;
+  IF current_setting('server_version_num')::int >= 150000 THEN
+    EXECUTE 'ALTER VIEW whatsapp_broadcast_audience SET (security_invoker = on)';
+  END IF;
+END $$;
+INSERT INTO schema_migrations (version) VALUES ('20261022_secure_broadcast_view')
+  ON CONFLICT (version) DO NOTHING;
