@@ -14,7 +14,6 @@
  * (nodejs_compat populates it from `wrangler secret` / [vars]).
  */
 import router from "../api/index.js";
-import maintenance from "../server/jobs/maintenance.js";
 import db from "../server/_lib/db.js";
 
 globalThis.__NAFUME_CLOUDFLARE = true;
@@ -160,21 +159,24 @@ export default {
     return res.toResponse();
   },
 
-  /* Scheduled jobs (wrangler.jsonc triggers.crons): runs the same maintenance
-     endpoint Vercel's cron used to call, authenticated with CRON_SECRET. */
+  // Scheduled jobs (wrangler.jsonc triggers.crons), authenticated with CRON_SECRET.
+  //   daily 04:00 UTC       maintenance: review requests, payment checks, outbox, Desk retry
+  //   every 10 minutes      retry orders the Desk dashboard has not accepted yet
   async scheduled(event, env, ctx) {
     exposeEnv(env);
     configureStorage(env);
     const secret = env.CRON_SECRET || env.ADMIN_API_TOKEN;
+    const job = event.cron === "*/10 * * * *" ? "drain-desk" : "maintenance";
+    const pathname = "/api/jobs/" + job;
     const req = await toNodeRequest(
-      new Request("https://internal.invalid/api/jobs/maintenance", {
+      new Request("https://internal.invalid" + pathname, {
         method: "POST", headers: { authorization: "Bearer " + (secret || "") }
       }),
-      new URL("https://internal.invalid/api/jobs/maintenance"));
+      new URL("https://internal.invalid" + pathname), { path: "jobs/" + job });
     const res = createResponse();
     ctx.waitUntil((async function () {
-      try { await maintenance(req, res); if (!res.headersSent) res.end(); }
-      catch (err) { console.error("[worker] scheduled maintenance failed", err && err.stack || err); }
+      try { await router(req, res); if (!res.headersSent) res.end(); }
+      catch (err) { console.error("[worker] scheduled " + job + " failed", err && err.stack || err); }
     })());
   }
 };

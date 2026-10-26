@@ -29,6 +29,8 @@ process.env.RESEND_API_KEY      = "re_test_local";
 process.env.ADMIN_API_TOKEN     = "test_admin_token";
 process.env.CRON_SECRET         = "test_cron_secret";
 process.env.SITE_URL            = "https://www.nafume.com";
+process.env.DESK_INTAKE_URL     = "https://desk.test/api/intake";
+process.env.DESK_INTAKE_SECRET  = "desk_test_secret_do_not_use";
 process.env.MSG91_AUTH_KEY      = "msg91_test_local";
 process.env.MSG91_TEMPLATE_ID   = "tmpl_test_local";
 delete process.env.NAFUME_DB_FILE;
@@ -1491,6 +1493,130 @@ async function testWhatsAppOrders() {
   eq("DB: the code is released", red[0].status, "released");
   r = await adminPost(cancelId, "mark_paid", {});
   eq("a cancelled order cannot be marked paid", r.status, 409);
+}
+
+/* ══ NAFUME Desk dashboard sync ══════════════════════════════════════════════
+   Every real order is queued, then sent to the Desk dashboard with a signed
+   request. A dashboard outage must never fail a checkout or lose an order. */
+async function testDeskSync() {
+  section("Desk dashboard sync");
+
+  const admin = { Authorization: "Bearer " + process.env.ADMIN_API_TOKEN };
+  const cron  = { Authorization: "Bearer " + process.env.CRON_SECRET };
+  const items = [{ id: "red-spirit", qty: 1 }];
+  const events = function (orderId) { return db.select("desk_events", { where: { order_id: orderId } }); };
+  mocks.state.desk.length = 0;
+
+  // ── a COD order reaches the Desk, signed ──
+  const client = makeClient();
+  let r = await client.post("/api/orders/create-cod", { items: items, shipping: shippingFor(710) });
+  eq("COD order placed", r.status, 200);
+  const codId = r.body.order.orderId;
+  eq("exactly one delivery to the Desk", mocks.state.desk.length, 1);
+  let sent = mocks.state.desk[0];
+  ok("the request is validly signed", sent.validSignature === true);
+  ok("the secret itself is not in the request", sent.raw.indexOf(process.env.DESK_INTAKE_SECRET) === -1);
+  ok("the signature headers are present",
+     !!sent.headers["x-nafume-timestamp"] && /^[0-9a-f]{64}$/.test(sent.headers["x-nafume-signature"]));
+  eq("it carries the website order number", sent.body.order.orderId, codId);
+  eq("…the payment method", sent.body.order.paymentMethod, "cod");
+  eq("…the total", sent.body.order.totals.total, r.body.order.totals.total);
+  eq("…the customer's name", sent.body.order.shipping.name, shippingFor(710).name);
+  eq("…the items", sent.body.order.items[0].productId, "red-spirit");
+  let rows = await events(codId);
+  eq("DB: one queue row", rows.length, 1);
+  eq("DB: marked sent", rows[0].status, "sent");
+  eq("DB: sent after one attempt", rows[0].attempts, 1);
+
+  // ── a double-click does not send it twice ──
+  const dupShip = shippingFor(711);
+  mocks.state.desk.length = 0;
+  await Promise.all([1, 2, 3].map(function () { return client.post("/api/orders/create-cod", { items: items, shipping: dupShip }); }));
+  const dupOrders = await db.select("orders", { where: { ship_email_normalized: dupShip.email } });
+  eq("a double-click makes one order", dupOrders.length, 1);
+  ok("…and it is sent to the Desk once", mocks.state.desk.filter(function (d) { return d.body.order.orderId === dupOrders[0].order_id; }).length >= 1 &&
+     (await events(dupOrders[0].order_id)).length === 1);
+
+  // ── an online order is sent only once it is PAID ──
+  const online = shippingFor(712);
+  mocks.state.desk.length = 0;
+  const create = await client.post("/api/razorpay/create-order", { items: items, amount: catalog.calculateTotals(799, 1, false, { prepaid: true }).total, shipping: online });
+  eq("online order created (unpaid)", create.status, 200);
+  eq("nothing is sent to the Desk before it is paid", mocks.state.desk.length, 0);
+  const pay = mocks.simulatePayment(create.body.order_id);
+  const verify = await client.post("/api/razorpay/verify-payment", pay);
+  eq("payment verified", verify.status, 200);
+  const sentFor = function (id) { return mocks.state.desk.filter(function (d) { return d.body.order.orderId === id; }); };
+  const onlineId = create.body.nafume_order_id;
+  eq("the paid order is sent to the Desk", sentFor(onlineId).length, 1);
+  eq("…marked paid", sentFor(onlineId)[0].body.order.paymentStatus, "paid");
+  eq("…with the Razorpay payment id", sentFor(onlineId)[0].body.order.razorpayPaymentId, pay.razorpay_payment_id);
+  r = await client.post("/api/razorpay/verify-payment", pay);
+  eq("a repeated verify does not send it again", sentFor(onlineId).length, 1);
+
+  // ── Order on WhatsApp, then staff confirm ──
+  mocks.state.desk.length = 0;
+  r = await client.post("/api/orders/create-whatsapp", { items: items, shipping: shippingFor(713) });
+  const waId = r.body.order.orderId;
+  eq("WhatsApp order arrives as awaiting", mocks.state.desk[0].body.order.orderStatus, "awaiting_whatsapp");
+  r = await api.post("/api/admin/orders", { orderId: waId, action: "confirm_whatsapp" }, admin);
+  eq("staff confirm it", r.status, 200);
+  const last = mocks.state.desk[mocks.state.desk.length - 1];
+  eq("the confirmation reaches the Desk", last.body.order.orderStatus, "confirmed");
+
+  // ── the Desk is DOWN: checkout still works and nothing is lost ──
+  mocks.state.desk.length = 0;
+  mocks.state.deskMode = "down";
+  r = await client.post("/api/orders/create-cod", { items: items, shipping: shippingFor(714) });
+  eq("checkout still succeeds while the Desk is down", r.status, 200);
+  const downId = r.body.order.orderId;
+  rows = await events(downId);
+  eq("DB: the order is still queued", rows[0].status, "queued");
+  eq("DB: one attempt recorded", rows[0].attempts, 1);
+  ok("DB: the reason is recorded", /Desk answered 503/.test(rows[0].last_error || ""), rows[0].last_error);
+  ok("the customer's response never mentions the Desk", JSON.stringify(r.body).toLowerCase().indexOf("desk") === -1);
+  eq("the order itself is safely saved", (await db.selectOne("orders", { order_id: downId })).order_id, downId);
+
+  // ── the retry job ──
+  r = await api.post("/api/jobs/drain-desk", {});
+  eq("the retry job refuses an anonymous caller", r.status, 401);
+  mocks.state.deskMode = "down";
+  r = await api.post("/api/jobs/drain-desk", {}, cron);
+  eq("the retry job runs", r.status, 200);
+  ok("…reports it could not deliver yet", r.body.summary.failed >= 1 && r.body.summary.sent === 0, r.body.summary);
+  mocks.state.deskMode = "ok";
+  mocks.state.desk.length = 0;
+  r = await api.post("/api/jobs/drain-desk", {}, cron);
+  ok("once the Desk is back, the order goes through", r.body.summary.sent >= 1, r.body.summary);
+  rows = await events(downId);
+  eq("DB: now marked sent", rows[0].status, "sent");
+  ok("DB: attempts counted", rows[0].attempts >= 2);
+  mocks.state.desk.length = 0;
+  r = await api.post("/api/jobs/drain-desk", {}, cron);
+  eq("running it again sends nothing twice", mocks.state.desk.length, 0);
+  eq("…and the backlog is empty", r.body.backlog.queued, 0);
+
+  // ── a slow Desk does not hold the customer up for long ──
+  mocks.state.deskMode = "slow";
+  const t0 = Date.now();
+  r = await client.post("/api/orders/create-cod", { items: items, shipping: shippingFor(715) });
+  const took = Date.now() - t0;
+  eq("checkout still succeeds when the Desk is slow", r.status, 200);
+  ok("…and gives up after about 3 seconds (" + took + " ms)", took >= 2900 && took < 4500, took);
+  rows = await events(r.body.order.orderId);
+  eq("DB: the order stays queued for a retry", rows[0].status, "queued");
+  ok("DB: the reason says it timed out", /timed out/i.test(rows[0].last_error || ""), rows[0].last_error);
+  mocks.state.deskMode = "ok";
+
+  // ── not configured: a no-op ──
+  const savedUrl = process.env.DESK_INTAKE_URL;
+  delete process.env.DESK_INTAKE_URL;
+  mocks.state.desk.length = 0;
+  r = await client.post("/api/orders/create-cod", { items: items, shipping: shippingFor(716) });
+  eq("checkout works with the Desk switched off", r.status, 200);
+  eq("nothing is sent", mocks.state.desk.length, 0);
+  eq("no queue row is written", (await events(r.body.order.orderId)).length, 0);
+  process.env.DESK_INTAKE_URL = savedUrl;
 }
 
 async function testDiscounts() {
@@ -3055,7 +3181,7 @@ async function main() {
     testPricing, testCheckoutValidation, testHappyPath, testNormalization,
     testIdempotency, testTamperedPayments, testRazorpayOutage, testRepeatCustomer,
     testWhatsAppConsent, testAccounts, testOrderLookup, testLeads, testQuiz,
-    testDeliveryAndReviews, testWebhookRecovery, testCodDoubleSubmit, testWhatsAppOrders,
+    testDeliveryAndReviews, testWebhookRecovery, testCodDoubleSubmit, testWhatsAppOrders, testDeskSync,
     testDiscounts, testReconciliation, testOrderOwnership, testOutbox,
     testWhatsAppAdapter, testHealth, testAdversarial,
     // launch-readiness regression suites

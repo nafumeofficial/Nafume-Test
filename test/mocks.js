@@ -34,7 +34,10 @@ const state = {
   razorpayFetchDelayMs:  0,
   failResend:            false,
   failMsg91:             false,
-  resendIdempotency:     new Map()  // Idempotency-Key -> response id
+  resendIdempotency:     new Map(), // Idempotency-Key -> response id
+  desk:                  [],        // every signed order delivery to the Desk dashboard
+  deskMode:              "ok",      // "ok" | "down" (503) | "slow" (answers after the timeout)
+  deskSlowMs:            3500
 };
 
 function nextId(prefix) { state.seq++; return prefix + String(Date.now()).slice(-8) + String(state.seq).padStart(4, "0"); }
@@ -227,6 +230,35 @@ function lastOtpFor(digits) {
   return rec ? rec.otp : null;
 }
 
+/* ── Desk dashboard (nafume-desk.pages.dev/api/intake) ─────────────────────
+   Verifies the signature exactly as the real Desk does, so a wrong or missing
+   signature fails here as it would in production. */
+async function deskIntake(urlStr, opts) {
+  const raw = (opts && opts.body) || "";
+  const ts  = headerOf(opts, "x-nafume-timestamp");
+  const sig = headerOf(opts, "x-nafume-signature");
+  const want = crypto.createHmac("sha256", process.env.DESK_INTAKE_SECRET || "")
+    .update(ts + "." + raw).digest("hex");
+  const validSignature = !!sig && sig === want;
+  let parsed = null;
+  try { parsed = JSON.parse(raw); } catch (_) {}
+  state.desk.push({ validSignature: validSignature, body: parsed, raw: raw, headers: (opts && opts.headers) || {} });
+  if (state.deskMode === "down") return jsonResponse(503, { error: "down" });
+  if (state.deskMode === "slow") {
+    // Like a real connection: give up the moment the caller aborts.
+    await new Promise(function (resolve, reject) {
+      const signal = opts && opts.signal;
+      const timer = setTimeout(resolve, state.deskSlowMs);
+      if (signal) signal.addEventListener("abort", function () {
+        clearTimeout(timer);
+        const e = new Error("aborted"); e.name = "AbortError"; reject(e);
+      });
+    });
+  }
+  if (!validSignature) return jsonResponse(401, { error: "Bad signature" });
+  return jsonResponse(200, { ok: true });
+}
+
 /* ── install ─────────────────────────────────────────────────────────────── */
 
 function install() {
@@ -235,6 +267,7 @@ function install() {
     if (target.indexOf("https://api.razorpay.com") === 0)  return razorpay(target, init);
     if (target.indexOf("https://api.resend.com") === 0)    return resend(target, init);
     if (target.indexOf("https://control.msg91.com") === 0) return msg91(target, init || {});
+    if (target.indexOf("https://desk.test/") === 0)        return deskIntake(target, init || {});
     return realFetch(input, init);
   };
 }
@@ -254,6 +287,8 @@ function reset() {
   state.razorpayFetchDelayMs = 0;
   state.failResend = false;
   state.failMsg91 = false;
+  state.desk.length = 0;
+  state.deskMode = "ok";
 }
 
 module.exports = {

@@ -25,6 +25,7 @@ const ROUTES = Object.freeze({
   "/discounts/validate":         require("../server/discounts/validate"),
   "/health":                     require("../server/health"),
   "/instagram/feed":             require("../server/instagram/feed"),
+  "/jobs/drain-desk":            require("../server/jobs/drain-desk"),
   "/jobs/drain-outbox":          require("../server/jobs/drain-outbox"),
   "/jobs/maintenance":           require("../server/jobs/maintenance"),
   "/jobs/reconcile-payments":    require("../server/jobs/reconcile-payments"),

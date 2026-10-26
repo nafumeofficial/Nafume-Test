@@ -36,12 +36,14 @@
   // Public, non-secret settings. Secrets (Razorpay, Resend, admin/cron tokens...)
   // are set with `npx wrangler secret put NAME` — never written here.
   "vars": {
-    "SITE_URL": "https://www.nafume.com"
+    "SITE_URL": "https://www.nafume.com",
+    // Orders are sent here. DESK_INTAKE_SECRET (a wrangler secret) signs each request.
+    "DESK_INTAKE_URL": "https://nafume-desk.pages.dev/api/intake"
   },
 
-  // Daily at 04:00 UTC, same as the Vercel cron it replaces; Cloudflare allows
-  // far more often if you want review requests and payment checks faster.
-  "triggers": { "crons": ["0 4 * * *"] },
+  // 04:00 UTC daily: maintenance (as the old Vercel cron). Every 10 minutes: retry
+  // any order the Desk dashboard has not accepted yet.
+  "triggers": { "crons": ["0 4 * * *", "*/10 * * * *"] },
 
   "observability": { "enabled": true }
 }

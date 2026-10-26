@@ -103,7 +103,9 @@ const UNIQUE_KEYS = {
   // at most one live challenge per (purpose, channel, identifier).
   verification_challenges: [["live_key"]],
   // One row per provider event id: a redelivered webhook is recognised.
-  payment_events:       [["event_key"]]
+  payment_events:       [["event_key"]],
+  // Orders waiting to be sent to the Desk dashboard (see _lib/desk.js).
+  desk_events:          []
 };
 
 const TABLES = Object.keys(UNIQUE_KEYS);

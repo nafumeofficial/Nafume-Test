@@ -346,6 +346,18 @@ CREATE TABLE IF NOT EXISTS payment_events (
 CREATE UNIQUE INDEX IF NOT EXISTS payment_events_event_key ON payment_events (event_key);
 CREATE INDEX IF NOT EXISTS payment_events_payment_idx ON payment_events (razorpay_payment_id);
 
+CREATE TABLE IF NOT EXISTS desk_events (
+  id         TEXT PRIMARY KEY,
+  order_id   TEXT    NOT NULL,
+  status     TEXT    NOT NULL DEFAULT 'queued',
+  attempts   INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  created_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  sent_at    TEXT
+);
+CREATE INDEX IF NOT EXISTS desk_events_status_idx ON desk_events (status, created_at);
+CREATE INDEX IF NOT EXISTS desk_events_order_idx  ON desk_events (order_id);
+
 CREATE TABLE IF NOT EXISTS schema_migrations (
   version    TEXT PRIMARY KEY,
   applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
@@ -364,5 +376,6 @@ CREATE VIEW IF NOT EXISTS whatsapp_broadcast_audience AS
 
 INSERT OR IGNORE INTO schema_migrations (version) VALUES
   ('20260915_launch_readiness'),
+  ('20261026_desk_events'),
   ('20261022_secure_broadcast_view'),
   ('d1_initial');

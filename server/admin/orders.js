@@ -189,6 +189,11 @@ module.exports = async function handler(req, res) {
 
     const updated = await db.update("orders", { where: { id: order.id }, set: patch });
     const fresh   = (updated && updated[0]) || order;
+
+    // Payment, WhatsApp confirmation and cancellation are mirrored to the Desk.
+    if (action === "confirm_whatsapp" || action === "mark_paid" || action === "cancel" || action === "mark_delivered") {
+      await require("../_lib/desk").queueOrder(fresh.order_id);
+    }
     const items   = await repo.getOrderItems(fresh.id);
 
     return http.ok(res, { order: repo.publicOrder(fresh, items) });

@@ -41,6 +41,8 @@ function requiredList() {
 const OPTIONAL = [
   { name: "RAZORPAY_WEBHOOK_SECRET", unlocks: "Payment recovery when the customer's browser never returns.",
     withoutIt: "Orders paid but abandoned mid-redirect stay pending until the reconciliation job runs." },
+  { name: "DESK_INTAKE_SECRET",     unlocks: "Orders appear automatically in the NAFUME Desk dashboard.",
+    withoutIt: "Orders are not sent to the dashboard (they are still saved here). Also needs DESK_INTAKE_URL." },
   { name: "RESEND_API_KEY",          unlocks: "Order confirmations, discount codes, quiz results, review requests.",
     withoutIt: "Messages are queued in outbound_messages and reported as not sent. Nothing is faked." },
   { name: "CUSTOMER_EMAIL_FROM",     unlocks: "A branded sender on a verified domain for customer email.",

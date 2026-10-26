@@ -237,6 +237,9 @@ function makeHandler(mode) {
 
     const items = await repo.getOrderItems(finalOrder.id);
 
+    // Show it in the Desk dashboard (queued first, so it is never lost).
+    await require("../_lib/desk").queueOrder(finalOrder.order_id);
+
     return http.ok(res, {
       duplicate: false,
       order: repo.publicOrder(finalOrder, items),

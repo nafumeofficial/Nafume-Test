@@ -34,7 +34,8 @@ const JOB_TOKENS = ["CRON_SECRET", "ADMIN_API_TOKEN"];
 const JOBS = [
   { name: "review-requests",    load: function () { return require("./review-requests"); } },
   { name: "reconcile-payments", load: function () { return require("./reconcile-payments"); } },
-  { name: "drain-outbox",       load: function () { return require("./drain-outbox"); } }
+  { name: "drain-outbox",       load: function () { return require("./drain-outbox"); } },
+  { name: "drain-desk",         load: function () { return require("./drain-desk"); } }
 ];
 
 /* Read per request; compared in constant time (see _lib/auth.js). */

@@ -390,6 +390,8 @@ async function markOrderPaid(order, payment) {
     } catch (e) {
       console.error("[repo.markOrderPaid] discount commit failed:", e && e.message);
     }
+    // Only the single winner tells the Desk dashboard (best effort, never throws).
+    await require("./desk").queueOrder(updated[0].order_id);
     return { order: updated[0], alreadyPaid: false };
   }
 
