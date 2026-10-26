@@ -51,7 +51,7 @@ module.exports = async function handler(req, res) {
 
   try {
     const session = await auth.getSession(req);
-    const prepaid = !/cod|cash/i.test(String(body.paymentMethod || "online"));
+    const prepaid = !/cod|cash|whatsapp/i.test(String(body.paymentMethod || "online"));
 
     const result = await discounts.quote(rawCode, {
       priced:       priced,

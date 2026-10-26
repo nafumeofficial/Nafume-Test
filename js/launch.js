@@ -2258,8 +2258,9 @@ function placeOrder(event) {
   var method = getShippingPaymentMethod();
   nfCheckoutInFlight = true;
 
-  if (/cod|cash/i.test(method)) placeCodOrder(collected.values, method);
-  else                          payWithRazorpay(collected.values, method);
+  if (/whatsapp/i.test(method))      placeWhatsAppOrder(collected.values, method);
+  else if (/cod|cash/i.test(method)) placeCodOrder(collected.values, method);
+  else                               payWithRazorpay(collected.values, method);
 }
 
 /* Kept as an alias so any older markup or bookmark that still calls
@@ -2287,6 +2288,35 @@ function placeCodOrder(values, method) {
     });
 }
 
+/* ── Order on WhatsApp ────────────────────────────────────────────────────
+   The order is saved on the server first (awaiting WhatsApp confirmation), so
+   it exists even if the customer never taps Send. The confirmation page then
+   offers the WhatsApp button, pre-filled with the saved order's details.     */
+
+function placeWhatsAppOrder(values, method) {
+  setCheckoutBusy(true, "Saving your order…");
+  showCheckoutStatus("Saving your order…", "info");
+
+  window.NafumeAPI.post("/api/orders/create-whatsapp", checkoutPayload(values, method))
+    .then(function (res) {
+      nfCheckoutInFlight = false;
+      setCheckoutBusy(false);
+
+      if (!res.ok) {
+        if (res.fields) showFieldErrors(res.fields);
+        showCheckoutStatus(res.message || "We couldn't save your order. Please try again.", "error");
+        return;
+      }
+      try {
+        if (res.data.whatsapp && res.data.whatsapp.url) {
+          sessionStorage.setItem("nafume_wa_" + res.data.order.orderId, res.data.whatsapp.url);
+        }
+      } catch (e) {}
+      showCheckoutStatus("Order saved. Taking you to WhatsApp confirmation…", "success");
+      onOrderPlaced(res.data.order, res.data.accountPrefill, values);
+    });
+}
+
 /* ── legacy WhatsApp message builder ───────────────────────────────────────
    Still used to compose the COURTESY confirmation a customer can send after a
    real order exists (confirmation page). It no longer creates orders.       */
@@ -2309,7 +2339,7 @@ function buildWhatsAppOrderText(order) {
     "Address:\n" + address + "\n\n" +
     "Items:\n" + itemLines + "\n\n" +
     "Total: " + curr + (t.total || 0).toLocaleString("en-IN") + "\n" +
-    "Payment: " + (order.paymentStatus === "paid" ? "PAID online" : "Cash on Delivery") + "\n\n" +
+    "Payment: " + (order.paymentStatus === "paid" ? "PAID online" : (order.paymentMethod === "whatsapp" ? "To be arranged on WhatsApp" : "Cash on Delivery")) + "\n\n" +
     "Please confirm dispatch. Thank you!";
 }
 window.buildWhatsAppOrderText = buildWhatsAppOrderText;
@@ -2999,11 +3029,19 @@ function updatePlaceOrderLabel() {
   var btn = document.getElementById("btn-place-order");
   if (!btn) return;
   var method = getShippingPaymentMethod();
-  var online = !/cod|cash/i.test(method);
-  var label  = online ? "Pay Securely" : "Place COD Order";
-  var icon   = online ? "lock" : "local_shipping";
+  var whatsapp = /whatsapp/i.test(method);
+  var online = !whatsapp && !/cod|cash/i.test(method);
+  var label  = whatsapp ? "Order on WhatsApp" : (online ? "Pay Securely" : "Place COD Order");
+  var icon   = whatsapp ? "chat" : (online ? "lock" : "local_shipping");
   btn.innerHTML = '<span class="material-symbols-outlined" style="font-size:20px;">' + icon + '</span> ' + label;
   delete btn.dataset.idleLabel;
+  var trust = document.getElementById("checkout-trust-note");
+  if (trust) {
+    if (!trust.dataset.original) trust.dataset.original = trust.textContent;
+    trust.textContent = whatsapp
+      ? "Your order is saved first. Then WhatsApp opens so you can send it to us and we confirm it."
+      : trust.dataset.original;
+  }
   renderOrderSummary();
   renderPrepaidNote();
   // COD removes the prepaid discount, which changes what a promo code is

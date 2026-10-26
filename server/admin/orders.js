@@ -15,6 +15,8 @@
  *        action = "mark_shipped"   { awb?, courierName?, shippedAt? }
  *              | "mark_delivered"  { deliveredAt? }
  *              | "set_tracking"    { awb, courierName }
+ *              | "confirm_whatsapp" (WhatsApp orders: staff confirm after chatting)
+ *              | "mark_paid"       { note? }  (money received outside Razorpay)
  *              | "cancel"
  */
 "use strict";
@@ -94,7 +96,37 @@ module.exports = async function handler(req, res) {
     const now   = db.nowISO();
     const patch = { updated_at: now };
 
+    // A WhatsApp order must be confirmed by staff before it can move on.
+    if (order.order_status === "awaiting_whatsapp" &&
+        (action === "mark_shipped" || action === "mark_delivered")) {
+      return http.fail(res, 409, "not_confirmed",
+        "This WhatsApp order is not confirmed yet. Use confirm_whatsapp first.");
+    }
+
     switch (action) {
+      case "confirm_whatsapp": {
+        if (order.order_status !== "awaiting_whatsapp") {
+          return http.fail(res, 409, "not_awaiting_whatsapp", "This order is not waiting for WhatsApp confirmation.");
+        }
+        patch.order_status = "confirmed";
+        // Now that the order is real, spend its promo code.
+        try { await discounts.markRedeemed(order.order_id); }
+        catch (e) { console.error("[admin/orders] discount redeem failed:", e && e.message); }
+        break;
+      }
+      case "mark_paid": {
+        if (order.order_status === "cancelled") {
+          return http.fail(res, 409, "cancelled", "A cancelled order cannot be marked paid.");
+        }
+        if (order.payment_status === "paid") {
+          return http.fail(res, 409, "already_paid", "This order is already paid.");
+        }
+        patch.payment_status      = "paid";
+        patch.paid_at             = now;
+        patch.payment_confirmed_via = "manual";
+        patch.payment_note        = validate.clean(body.note, 200) || "marked paid by staff";
+        break;
+      }
       case "mark_shipped": {
         const at = parseTimestamp(body.shippedAt, true);
         if (at === undefined) return http.fail(res, 400, "invalid_date", "shippedAt is not a valid date.");
@@ -108,7 +140,7 @@ module.exports = async function handler(req, res) {
         const at = parseTimestamp(body.deliveredAt, true);
         if (at === undefined) return http.fail(res, 400, "invalid_date", "deliveredAt is not a valid date.");
 
-        const isCod = order.payment_method === "cod";
+        const isCod = order.payment_method === "cod" || order.payment_method === "whatsapp";
 
         // A prepaid order must actually be paid before it can be delivered.
         // A COD order is the opposite case: delivery is WHEN it gets paid, so
@@ -152,7 +184,7 @@ module.exports = async function handler(req, res) {
       }
       default:
         return http.fail(res, 400, "invalid_action",
-          "action must be mark_shipped, mark_delivered, set_tracking or cancel.");
+          "action must be mark_shipped, mark_delivered, set_tracking, confirm_whatsapp, mark_paid or cancel.");
     }
 
     const updated = await db.update("orders", { where: { id: order.id }, set: patch });

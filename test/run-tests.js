@@ -1367,6 +1367,132 @@ async function testCodDoubleSubmit() {
 
 /* ══ Discounts ═══════════════════════════════════════════════════════════════
    The code must actually change the price, and must not be reusable. */
+/* ══ Order on WhatsApp ═══════════════════════════════════════════════════════
+   Saved first (awaiting_whatsapp), then the customer sends it on WhatsApp and
+   staff confirm it. These tests prove the order is recorded before WhatsApp is
+   ever opened, is priced and protected like any other order, and cannot be
+   shipped until staff confirm it. */
+async function testWhatsAppOrders() {
+  section("Order on WhatsApp");
+
+  const admin = { Authorization: "Bearer " + process.env.ADMIN_API_TOKEN };
+  const adminPost = function (orderId, action, extra) {
+    return api.post("/api/admin/orders", Object.assign({ orderId: orderId, action: action }, extra || {}), admin);
+  };
+  const items = [{ id: "red-spirit", qty: 1 }];
+  const plain = catalog.calculateTotals(799, 1, false, { prepaid: false });
+
+  // ── the order is saved BEFORE WhatsApp opens ──
+  const ship = shippingFor(700);
+  const client = makeClient();
+  let r = await client.post("/api/orders/create-whatsapp", { items: items, amount: plain.total, shipping: ship });
+  eq("create-whatsapp answers 200", r.status, 200);
+  ok("response says the order is saved", r.body.success === true && !!r.body.order);
+  const orderId = r.body.order.orderId;
+  eq("order status is awaiting_whatsapp", r.body.order.orderStatus, "awaiting_whatsapp");
+  eq("payment method is whatsapp", r.body.order.paymentMethod, "whatsapp");
+  eq("payment is still pending", r.body.order.paymentStatus, "pending");
+  eq("total has NO prepaid discount", r.body.order.totals.total, plain.total);
+
+  ok("response carries a wa.me link", /^https:\/\/wa\.me\/\d+\?text=/.test(r.body.whatsapp.url));
+  const text = decodeURIComponent(r.body.whatsapp.url.split("?text=")[1]);
+  ok("message contains the order number", text.indexOf(orderId) !== -1);
+  ok("message contains the total", text.indexOf("Rs " + plain.total) !== -1);
+  ok("message contains the customer's name", text.indexOf(ship.name) !== -1);
+
+  let row = await db.selectOne("orders", { order_id: orderId });
+  ok("DB: order exists", !!row);
+  eq("DB: order_status awaiting_whatsapp", row.order_status, "awaiting_whatsapp");
+  eq("DB: checkout_type whatsapp", row.checkout_type, "whatsapp");
+  eq("DB: no Razorpay order was created", row.razorpay_order_id, null);
+  eq("DB: total stored", row.amount_total, plain.total);
+
+  // ── validation + tamper protection, shared with COD ──
+  r = await client.post("/api/orders/create-whatsapp", { items: items, amount: plain.total - 100, shipping: shippingFor(701) });
+  eq("a wrong amount is rejected", r.status, 400);
+  eq("…as an amount mismatch", r.body.error, "amount_mismatch");
+  r = await client.post("/api/orders/create-whatsapp", { items: items, shipping: Object.assign({}, shippingFor(702), { phone: "123" }) });
+  eq("an invalid phone is rejected", r.status, 400);
+  r = await client.post("/api/orders/create-whatsapp", { items: [], shipping: shippingFor(703) });
+  eq("an empty cart is rejected", r.status, 400);
+  r = await api.get("/api/orders/create-whatsapp");
+  eq("GET is not allowed", r.status, 405);
+
+  // ── double-click protection ──
+  const dupShip = shippingFor(704);
+  const burst = await Promise.all([1, 2, 3].map(function () {
+    return client.post("/api/orders/create-whatsapp", { items: items, shipping: dupShip });
+  }));
+  ok("all submits answered 200", burst.every(function (x) { return x.status === 200; }));
+  eq("a double-click creates exactly one order",
+     new Set(burst.map(function (x) { return x.body.order.orderId; })).size, 1);
+
+  // ── staff must confirm before it can move on ──
+  r = await adminPost(orderId, "mark_shipped", {});
+  eq("cannot ship an unconfirmed WhatsApp order", r.status, 409);
+  eq("…with a clear reason", r.body.error, "not_confirmed");
+  r = await api.post("/api/admin/orders", { orderId: orderId, action: "confirm_whatsapp" });
+  eq("confirming needs the admin token", r.status, 401);
+
+  r = await adminPost(orderId, "confirm_whatsapp", {});
+  eq("staff can confirm", r.status, 200);
+  eq("status becomes confirmed", r.body.order.orderStatus, "confirmed");
+  r = await adminPost(orderId, "confirm_whatsapp", {});
+  eq("confirming twice is refused", r.status, 409);
+  r = await adminPost(orderId, "mark_shipped", { awb: "AWB-WA-1", courierName: "TestCourier" });
+  eq("a confirmed order can ship", r.status, 200);
+  r = await adminPost(orderId, "mark_delivered", {});
+  eq("a confirmed order can be delivered", r.status, 200);
+  eq("delivery collects the money, as with COD", r.body.order.paymentStatus, "paid");
+
+  // ── money received outside Razorpay (UPI agreed on WhatsApp) ──
+  r = await client.post("/api/orders/create-whatsapp", { items: items, shipping: shippingFor(705) });
+  const upiOrder = r.body.order.orderId;
+  await adminPost(upiOrder, "confirm_whatsapp", {});
+  r = await adminPost(upiOrder, "mark_paid", { note: "UPI received on WhatsApp" });
+  eq("staff can mark an order paid", r.status, 200);
+  eq("payment status is paid", r.body.order.paymentStatus, "paid");
+  row = await db.selectOne("orders", { order_id: upiOrder });
+  eq("DB: marked as a manual payment", row.payment_confirmed_via, "manual");
+  ok("DB: paid_at is set", !!row.paid_at);
+  r = await adminPost(upiOrder, "mark_paid", {});
+  eq("marking paid twice is refused", r.status, 409);
+
+  // ── promo codes: held while unconfirmed, spent on confirmation ──
+  const promoShip = shippingFor(706);
+  const quote = await client.post("/api/discounts/validate", {
+    code: "NAFUME10", items: items, paymentMethod: "WhatsApp", contact: promoShip.email
+  });
+  eq("the promo quote treats WhatsApp as not prepaid", quote.body.totals.prepaidDiscount, 0);
+  r = await client.post("/api/orders/create-whatsapp", {
+    items: items, amount: quote.body.totals.total, shipping: promoShip, discountCode: "NAFUME10"
+  });
+  eq("a promo order is accepted at the quoted total", r.status, 200);
+  const promoOrder = r.body.order.orderId;
+  let red = await db.select("discount_redemptions", { where: { order_id: promoOrder } });
+  eq("DB: one redemption recorded", red.length, 1);
+  eq("DB: it is only held (pending) until staff confirm", red[0].status, "pending");
+  await adminPost(promoOrder, "confirm_whatsapp", {});
+  red = await db.select("discount_redemptions", { where: { order_id: promoOrder } });
+  eq("DB: confirming spends the code", red[0].status, "redeemed");
+
+  // ── a cancelled WhatsApp order hands its code back ──
+  const cancelShip = shippingFor(707);
+  const q2 = await client.post("/api/discounts/validate", {
+    code: "NAFUME10", items: items, paymentMethod: "WhatsApp", contact: cancelShip.email
+  });
+  r = await client.post("/api/orders/create-whatsapp", {
+    items: items, amount: q2.body.totals.total, shipping: cancelShip, discountCode: "NAFUME10"
+  });
+  const cancelId = r.body.order.orderId;
+  r = await adminPost(cancelId, "cancel", {});
+  eq("staff can cancel an unconfirmed order", r.status, 200);
+  red = await db.select("discount_redemptions", { where: { order_id: cancelId } });
+  eq("DB: the code is released", red[0].status, "released");
+  r = await adminPost(cancelId, "mark_paid", {});
+  eq("a cancelled order cannot be marked paid", r.status, 409);
+}
+
 async function testDiscounts() {
   section("Discount codes (server-authoritative)");
 
@@ -2929,7 +3055,7 @@ async function main() {
     testPricing, testCheckoutValidation, testHappyPath, testNormalization,
     testIdempotency, testTamperedPayments, testRazorpayOutage, testRepeatCustomer,
     testWhatsAppConsent, testAccounts, testOrderLookup, testLeads, testQuiz,
-    testDeliveryAndReviews, testWebhookRecovery, testCodDoubleSubmit,
+    testDeliveryAndReviews, testWebhookRecovery, testCodDoubleSubmit, testWhatsAppOrders,
     testDiscounts, testReconciliation, testOrderOwnership, testOutbox,
     testWhatsAppAdapter, testHealth, testAdversarial,
     // launch-readiness regression suites

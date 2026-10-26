@@ -31,6 +31,7 @@ const ROUTES = Object.freeze({
   "/jobs/review-requests":       require("../server/jobs/review-requests"),
   "/leads/subscribe":            require("../server/leads/subscribe"),
   "/orders/create-cod":          require("../server/orders/create-cod"),
+  "/orders/create-whatsapp":     require("../server/orders/create-whatsapp"),
   "/orders/lookup":              require("../server/orders/lookup"),
   "/otp/send":                   require("../server/otp/send"),
   "/otp/verify":                 require("../server/otp/verify"),

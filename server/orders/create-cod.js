@@ -31,11 +31,54 @@ const checkout  = require("../_lib/checkout");
 
 const DUPLICATE_WINDOW_MS = 2 * 60 * 1000;
 
-module.exports = async function handler(req, res) {
+/* The same checks, pricing and duplicate protection serve two kinds of
+   "pay later" order. They differ only in what state the order is saved in:
+     cod       real and confirmed at once; cash is collected on delivery.
+     whatsapp  saved as awaiting_whatsapp; the customer sends the order on
+               WhatsApp and staff confirm it (admin action "confirm_whatsapp").
+               Its promo code is only held until then, not spent.            */
+const MODES = {
+  cod: {
+    name: "create-cod", source: "checkout_cod", checkoutType: "cod", paymentMethod: "cod",
+    orderStatus: "confirmed", redeemNow: true,
+    message: "Your Cash on Delivery order is confirmed."
+  },
+  whatsapp: {
+    name: "create-whatsapp", source: "checkout_whatsapp", checkoutType: "whatsapp", paymentMethod: "whatsapp",
+    orderStatus: "awaiting_whatsapp", redeemNow: false,
+    message: "Your order is saved. Send it on WhatsApp so we can confirm it."
+  }
+};
+
+function whatsappNumber() {
+  const n = String(process.env.WHATSAPP_ORDER_NUMBER || "918595862227").replace(/\D/g, "");
+  return n || "918595862227";
+}
+
+/* The pre-filled message the customer sends. Built on the server from the
+   SAVED order, so it always shows the real order number, items and total. */
+function buildWhatsAppMessage(order, items) {
+  const lines = (items || []).map(function (i, n) {
+    return (n + 1) + ". " + i.product_name + " x " + i.quantity + " = Rs " + i.line_total;
+  }).join("\n");
+  const address = [order.ship_line1, order.ship_line2, order.ship_city, order.ship_state, order.ship_pincode]
+    .filter(Boolean).join(", ");
+  return "NAFUME Order " + order.order_id + "\n\n" +
+    "Name: " + (order.ship_name || "") + "\n" +
+    "Phone: " + (order.ship_phone || "") + "\n\n" +
+    "Address: " + address + "\n\n" +
+    "Items:\n" + lines + "\n\n" +
+    "Total: Rs " + order.amount_total + "\n\n" +
+    "Please confirm my order. Thank you!";
+}
+
+function makeHandler(mode) {
+  const M = MODES[mode];
+  return async function handler(req, res) {
   if (!http.guard(req, res, "POST")) return;
-  if (!http.rateLimit(req, res, { key: "create-cod", limit: 25, windowMs: 60000 })) return;
+  if (!http.rateLimit(req, res, { key: M.name, limit: 25, windowMs: 60000 })) return;
   if (!http.requireStorage(res)) return;
-  if (!await http.durableLimit(req, res, { key: "create-cod-ip", limit: 20, windowMs: 15 * 60 * 1000 })) return;
+  if (!await http.durableLimit(req, res, { key: M.name + "-ip", limit: 20, windowMs: 15 * 60 * 1000 })) return;
 
   const body = await http.body(req, res);
   if (!body) return;
@@ -55,7 +98,7 @@ module.exports = async function handler(req, res) {
   try {
     session = await auth.getSession(req);
   } catch (err) {
-    return http.handleError(res, err, "orders/create-cod");
+    return http.handleError(res, err, "orders/" + M.name);
   }
 
   /* Promo code — re-validated server-side, exactly as in the Razorpay path.
@@ -77,7 +120,7 @@ module.exports = async function handler(req, res) {
         }
       });
     } catch (err) {
-      return http.handleError(res, err, "orders/create-cod");
+      return http.handleError(res, err, "orders/" + M.name);
     }
   }
 
@@ -97,7 +140,7 @@ module.exports = async function handler(req, res) {
   const notes         = validate.cleanMultiline(body.notes, 500);
 
   try {
-    const placed = await checkout.checkoutCustomer(session, shipping.value, "checkout_cod");
+    const placed = await checkout.checkoutCustomer(session, shipping.value, M.source);
     const found  = { customer: placed.customer };
     const s      = shipping.value;
 
@@ -107,7 +150,7 @@ module.exports = async function handler(req, res) {
        EVERY typed detail matches, so this can never hand one person's order
        (and address) back to someone who merely typed the same email.        */
     const recent = await db.select("orders", {
-      where: { customer_id: found.customer.id, checkout_type: "cod" },
+      where: { customer_id: found.customer.id, checkout_type: M.checkoutType },
       order: { column: "created_at", ascending: false },
       limit: 3
     });
@@ -156,9 +199,9 @@ module.exports = async function handler(req, res) {
     const updated = await db.update("orders", {
       where: { id: order.id },
       set: {
-        payment_method: "cod",
-        checkout_type:  "cod",
-        order_status:   "confirmed",
+        payment_method: M.paymentMethod,
+        checkout_type:  M.checkoutType,
+        order_status:   M.orderStatus,
         payment_status: "pending",
         updated_at:     db.nowISO()
       }
@@ -183,7 +226,9 @@ module.exports = async function handler(req, res) {
         return http.fail(res, 409, "discount_unavailable",
           "That code was just used on another order. Please refresh your cart and try again.");
       }
-      await discounts.markRedeemed(orderId);
+      // A WhatsApp order is not confirmed yet, so its code stays pending (held
+      // for a short while) and is spent only when staff confirm the order.
+      if (M.redeemNow) await discounts.markRedeemed(orderId);
     }
 
     if (placed.recordConsent) {
@@ -209,10 +254,21 @@ module.exports = async function handler(req, res) {
             reason:    (discountQuote && !discountQuote.ok) ? discountQuote.reason : null
           }
         : null,
-      message: "Your Cash on Delivery order is confirmed."
+      whatsapp: mode === "whatsapp"
+        ? (function () {
+            const text = buildWhatsAppMessage(finalOrder, items);
+            return { number: whatsappNumber(), message: text,
+                     url: "https://wa.me/" + whatsappNumber() + "?text=" + encodeURIComponent(text) };
+          })()
+        : undefined,
+      message: M.message
     });
 
   } catch (err) {
-    return http.handleError(res, err, "orders/create-cod");
+    return http.handleError(res, err, "orders/" + M.name);
   }
-};
+  };
+}
+
+module.exports = makeHandler("cod");
+module.exports.makeHandler = makeHandler;

@@ -189,7 +189,7 @@
       paymentStatus:     o.paymentStatus,
       fulfillmentStatus: o.fulfillmentStatus,
       paymentMethod:     o.paymentMethod,
-      checkoutType:      o.paymentMethod === "cod" ? "cod" : "razorpay",
+      checkoutType:      o.paymentMethod === "cod" ? "cod" : (o.paymentMethod === "whatsapp" ? "whatsapp" : "razorpay"),
       source:            "server",
       customer: {
         name:    s.name    || "",

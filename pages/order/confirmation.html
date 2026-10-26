@@ -195,6 +195,7 @@
         function humanOrderStatus(s) {
             const map = {
                 created:   "Order Placed",
+                awaiting_whatsapp: "Awaiting WhatsApp confirmation",
                 confirmed: "Confirmed",
                 cancelled: "Cancelled",
                 shipped:   "Shipped",
@@ -310,8 +311,26 @@
             const isConfirmingPayment = !isPaid && !isCod &&
                 (order.paymentStatus === "awaiting_verification" || (confirming && order.paymentStatus === "pending"));
             const isPaymentFailed = !isPaid && !isCod && order.paymentStatus === "failed";
+            // "Order on WhatsApp": saved first, confirmed by staff after the customer
+            // sends the pre-filled message.
+            const isWhatsApp = order.paymentMethod === "whatsapp" || order.checkoutType === "whatsapp";
+            const isAwaitingWhatsApp = isWhatsApp && (order.status === "awaiting_whatsapp" || order.orderStatus === "awaiting_whatsapp");
 
-            const headerHtml = isConfirmingPayment ? `
+            const headerHtml = isAwaitingWhatsApp ? `
+                <span class="material-symbols-outlined text-4xl text-[#25D366] mb-4">chat</span>
+                <span class="text-[10px] font-semibold text-accent-bronze uppercase tracking-[0.2em] mb-2 block">One last step</span>
+                <h2 class="text-headline-sm font-semibold text-primary mb-4 italic">Send your order on WhatsApp</h2>
+
+                <div class="bg-accent-bronze/10 border border-accent-bronze/20 p-4 rounded text-left mb-6 text-xs text-primary leading-relaxed font-light flex items-start gap-3" role="status">
+                    <span class="material-symbols-outlined text-accent-bronze text-[18px] flex-shrink-0 mt-0.5">info</span>
+                    <div>
+                        <strong class="font-semibold text-accent-bronze uppercase tracking-wider block mb-1">Your order is saved</strong>
+                        Order <strong>${e(order.orderId)}</strong> is saved but <strong>not confirmed yet</strong>. Tap the button below to open WhatsApp with your order details filled in, then press Send. We will confirm it there and share payment details if needed.
+                    </div>
+                </div>
+                <button type="button" onclick="sendOrderOnWhatsApp()" id="wa-send-btn" class="w-full inline-flex justify-center items-center gap-2 px-6 py-4 mb-6 bg-[#25D366] text-white text-label-sm font-semibold uppercase tracking-widest hover:opacity-90 transition-opacity rounded-sm shadow-md">
+                    <span class="material-symbols-outlined text-[18px]">chat</span> Send order on WhatsApp
+                </button>` : isConfirmingPayment ? `
                 <span class="material-symbols-outlined text-4xl text-accent-bronze mb-4 animate-pulse">hourglass_top</span>
                 <span class="text-[10px] font-semibold text-accent-bronze uppercase tracking-[0.2em] mb-2 block">Confirming Payment</span>
                 <h2 class="text-headline-sm font-semibold text-primary mb-4 italic">Your order is saved</h2>
@@ -350,8 +369,10 @@
                 <div class="bg-accent-bronze/10 border border-accent-bronze/20 p-4 rounded text-left mb-6 text-xs text-primary leading-relaxed font-light flex items-start gap-3">
                     <span class="material-symbols-outlined text-accent-bronze text-[18px] flex-shrink-0 mt-0.5">local_shipping</span>
                     <div>
-                        <strong class="font-semibold text-accent-bronze uppercase tracking-wider block mb-1">${isCod ? "Cash on Delivery" : "Payment Pending"}</strong>
-                        ${isCod
+                        <strong class="font-semibold text-accent-bronze uppercase tracking-wider block mb-1">${isWhatsApp ? "Confirmed on WhatsApp" : (isCod ? "Cash on Delivery" : "Payment Pending")}</strong>
+                        ${isWhatsApp
+                            ? `Your order is confirmed and will be dispatched within 24 hours. Payment is as arranged with us on WhatsApp, or <strong>${curr(t.total)}</strong> on delivery.`
+                            : isCod
                             ? `Your order is saved and will be dispatched within 24 hours. Please keep <strong>${curr(t.total)}</strong> ready for the courier.`
                             : `Your order is saved. We'll confirm payment shortly.`}
                     </div>
@@ -547,6 +568,19 @@
             return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
                 return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c];
             });
+        }
+
+        // Opens WhatsApp with this order pre-filled. Uses the link the server built when
+        // the order was saved; falls back to building it from the order on screen.
+        function sendOrderOnWhatsApp() {
+            var o = currentActiveOrder || {};
+            var url = null;
+            try { url = sessionStorage.getItem("nafume_wa_" + o.orderId); } catch (err) {}
+            if (!url) {
+                var text = (typeof window.buildWhatsAppOrderText === "function") ? window.buildWhatsAppOrderText(o) : ("NAFUME Order " + (o.orderId || ""));
+                url = "https://wa.me/" + waNumber() + "?text=" + encodeURIComponent(text);
+            }
+            window.open(url, "_blank");
         }
 
         function waNumber() {

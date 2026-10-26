@@ -289,13 +289,15 @@
           '<div style="min-width:0;">' +
             '<div class="ord-id">' + esc(o.orderId) + '</div>' +
             '<div class="ord-meta">' + fmtDate(o.createdAt) + ' · ' +
-              esc(o.paymentMethod === "cod" ? "Cash on Delivery" : "Paid online") +
+              esc(o.paymentMethod === "cod" ? "Cash on Delivery"
+                  : (o.paymentMethod === "whatsapp" ? "Ordered on WhatsApp" : "Paid online")) +
               (o.razorpayPaymentId ? ' · ' + esc(o.razorpayPaymentId) : '') +
             '</div>' +
           '</div>' +
           '<div style="text-align:right;">' +
             '<div style="font-weight:700;font-size:15px;">' + money(t.total) + '</div>' +
             '<div class="pills" style="margin-top:6px;justify-content:flex-end;">' +
+              (o.orderStatus === "awaiting_whatsapp" ? '<span class="pill amber">Waiting for WhatsApp confirmation</span>' : '') +
               '<span class="pill ' + payPill + '">Pay: ' + esc(o.paymentStatus) + '</span>' +
               '<span class="pill ' + fulPill + '">' + esc(o.fulfillmentStatus) + '</span>' +
               (o.whatsappOptIn ? '<span class="pill green">WA opt-in</span>' : '') +
@@ -331,6 +333,10 @@
         '</div>' +
 
         '<div class="acts">' +
+          (o.orderStatus === "awaiting_whatsapp"
+            ? '<button class="b-deliver act-confirm" type="button">Confirm WhatsApp order</button>' : '') +
+          (o.paymentMethod === "whatsapp" && o.paymentStatus !== "paid" && o.orderStatus !== "cancelled"
+            ? '<button class="b-ghost act-paid" type="button">Mark paid</button>' : '') +
           '<button class="b-ship act-ship" type="button">Mark shipped</button>' +
           '<button class="b-deliver act-deliver" type="button">Mark delivered</button>' +
           '<button class="b-ghost act-track" type="button">Save tracking only</button>' +
@@ -376,6 +382,13 @@
           setTimeout(render, 700);
         });
       }
+
+      var confirmBtn = row.querySelector(".act-confirm");
+      if (confirmBtn) confirmBtn.addEventListener("click", function () { act("confirm_whatsapp", {}); });
+      var paidBtn = row.querySelector(".act-paid");
+      if (paidBtn) paidBtn.addEventListener("click", function () {
+        act("mark_paid", { note: "Payment received (arranged on WhatsApp)" });
+      });
 
       row.querySelector(".act-ship").addEventListener("click", function () {
         act("mark_shipped", {
