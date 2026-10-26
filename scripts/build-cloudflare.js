@@ -28,8 +28,11 @@ function copyDir(src, dest) {
   fs.readdirSync(src, { withFileTypes: true }).forEach(function (entry) {
     if (entry.isDirectory()) {
       if (src === ROOT && EXCLUDE_DIRS.has(entry.name)) return;
-      if (entry.name.startsWith("_backup")) return;
+      if (entry.name.startsWith("_backup") || entry.name.startsWith(".")) return;
       copyDir(path.join(src, entry.name), path.join(dest, entry.name));
+    } else if (entry.name.startsWith(".")) {
+      // Never publish hidden files (.dev.vars, .env*, .gitignore ...).
+      return;
     } else if (!EXCLUDE_FILES.test(entry.name)) {
       fs.copyFileSync(path.join(src, entry.name), path.join(dest, entry.name));
     }
