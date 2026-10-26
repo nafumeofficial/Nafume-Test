@@ -24,12 +24,19 @@ function present(name) {
   return typeof v === "string" && v.trim().length > 0;
 }
 
-const REQUIRED = [
+/* Supabase variables are only required when Supabase is the storage driver; on
+   Cloudflare the D1 binding replaces them (and needs no secret at all). */
+const SUPABASE_REQUIRED = [
   { name: "SUPABASE_URL",              why: "Postgres endpoint. Without it nothing persists." },
-  { name: "SUPABASE_SERVICE_ROLE_KEY", why: "Server-side database access. Never exposed to the browser." },
+  { name: "SUPABASE_SERVICE_ROLE_KEY", why: "Server-side database access. Never exposed to the browser." }
+];
+const REQUIRED_COMMON = [
   { name: "RAZORPAY_KEY_ID",           why: "Publishable key used to open Razorpay Checkout." },
   { name: "RAZORPAY_KEY_SECRET",       why: "Signs and verifies payments. Server-side only." }
 ];
+function requiredList() {
+  return db.driverName() === "d1" ? REQUIRED_COMMON : SUPABASE_REQUIRED.concat(REQUIRED_COMMON);
+}
 
 const OPTIONAL = [
   { name: "RAZORPAY_WEBHOOK_SECRET", unlocks: "Payment recovery when the customer's browser never returns.",
@@ -51,14 +58,14 @@ const OPTIONAL = [
   { name: "MSG91_TEMPLATE_ID",       unlocks: "The DLT-approved SMS template MSG91 needs to send codes.",
     withoutIt: "SMS codes cannot be sent even with MSG91_AUTH_KEY set." },
   { name: "VERIFICATION_SECRET",     unlocks: "A dedicated key for hashing stored email verification codes.",
-    withoutIt: "A key derived from SUPABASE_SERVICE_ROLE_KEY is used instead (rotating that key invalidates codes in flight)." },
+    withoutIt: "A key derived from NAFUME_SERVER_SECRET (or SUPABASE_SERVICE_ROLE_KEY) is used instead (rotating it invalidates codes in flight)." },
   { name: "INSTAGRAM_ACCESS_TOKEN",  unlocks: "Live Instagram feed on the homepage.",
     withoutIt: "The feed falls back to bundled product images." }
 ];
 
 /* inspect() -> a full, secret-free configuration report. */
 function inspect() {
-  const required = REQUIRED.map(function (item) {
+  const required = requiredList().map(function (item) {
     return { name: item.name, present: present(item.name), why: item.why };
   });
   const optional = OPTIONAL.map(function (item) {
@@ -73,7 +80,7 @@ function inspect() {
 
   // A memory driver in production means data is not really being stored.
   const driver = db.driverName();
-  const driverIsProductionSafe = driver === "supabase";
+  const driverIsProductionSafe = driver === "supabase" || driver === "d1";
 
   const memoryRefused = db.memoryDriverRefused();
 
@@ -122,4 +129,4 @@ function assertReadyToTakeOrders() {
   return null;
 }
 
-module.exports = { inspect, assertReadyToTakeOrders, present, REQUIRED, OPTIONAL };
+module.exports = { inspect, assertReadyToTakeOrders, present, REQUIRED: SUPABASE_REQUIRED.concat(REQUIRED_COMMON), OPTIONAL };

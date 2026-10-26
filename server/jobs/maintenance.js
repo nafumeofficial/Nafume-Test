@@ -29,10 +29,12 @@ const auth = require("../_lib/auth");
 
 const JOB_TOKENS = ["CRON_SECRET", "ADMIN_API_TOKEN"];
 
+/* Static require() strings, not a computed path: a bundler (Cloudflare Workers)
+   can only include modules it can see. Still loaded lazily, per job. */
 const JOBS = [
-  { name: "review-requests",    module: "./review-requests" },
-  { name: "reconcile-payments", module: "./reconcile-payments" },
-  { name: "drain-outbox",       module: "./drain-outbox" }
+  { name: "review-requests",    load: function () { return require("./review-requests"); } },
+  { name: "reconcile-payments", load: function () { return require("./reconcile-payments"); } },
+  { name: "drain-outbox",       load: function () { return require("./drain-outbox"); } }
 ];
 
 /* Read per request; compared in constant time (see _lib/auth.js). */
@@ -80,7 +82,7 @@ module.exports = async function handler(req, res) {
     const { res: fakeRes, captured } = captureResponse();
 
     try {
-      const run = require(job.module);
+      const run = job.load();
       // Each job reads req.query itself; give it a clean one it can rely on.
       const jobReq = Object.create(req);
       jobReq.query = req.query || {};

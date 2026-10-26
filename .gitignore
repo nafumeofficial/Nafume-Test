@@ -23,3 +23,6 @@ docs/
 assets/Screenshots/
 assets/Shop Top Fragrances Online/
 *.lnk
+dist/
+.wrangler/
+.dev.vars

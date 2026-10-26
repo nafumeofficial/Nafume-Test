@@ -21,7 +21,8 @@
  */
 "use strict";
 
-process.env.NAFUME_DB_DRIVER    = "memory";
+const D1_MODE = String(process.env.NAFUME_TEST_DB || "").toLowerCase() === "d1";
+process.env.NAFUME_DB_DRIVER    = D1_MODE ? "d1" : "memory";
 process.env.RAZORPAY_KEY_ID     = "rzp_test_localsuite";
 process.env.RAZORPAY_KEY_SECRET = "local_test_secret_do_not_use_in_production";
 process.env.RESEND_API_KEY      = "re_test_local";
@@ -39,6 +40,11 @@ mocks.install();
 
 const { start }   = require("./server");
 const db          = require("../server/_lib/db");
+if (D1_MODE) {
+  // Same suite, real D1 driver + db/d1/schema.sql on node:sqlite (see test/d1-shim.js).
+  db.setD1Binding(require("./d1-shim").createShim());
+  console.log("[tests] storage driver: d1 (node:sqlite shim)");
+}
 const catalog     = require("../server/_lib/catalog");
 const discounts   = require("../server/_lib/discounts");
 const messagingLib = require("../server/_lib/messaging");
@@ -1850,7 +1856,7 @@ async function testHealth() {
 
   const admin = { Authorization: "Bearer " + process.env.ADMIN_API_TOKEN };
   r = await client.get("/api/health", admin);
-  ok("detailed health lists required variables", Array.isArray(r.body.required) && r.body.required.length >= 4);
+  ok("detailed health lists required variables", Array.isArray(r.body.required) && r.body.required.length >= (D1_MODE ? 2 : 4));
   ok("detailed health lists optional integrations", Array.isArray(r.body.optional));
   ok("detailed health reports capabilities", !!r.body.capabilities);
 
@@ -1861,7 +1867,7 @@ async function testHealth() {
      serialised.indexOf(process.env.ADMIN_API_TOKEN) === -1 &&
      serialised.indexOf(process.env.CRON_SECRET) === -1);
   ok("it warns about the memory driver",
-     /memory/i.test(r.body.storage.warning || ""), r.body.storage.warning);
+     D1_MODE || /memory/i.test(r.body.storage.warning || ""), r.body.storage.warning);
   eq("it knows WhatsApp sending is unavailable", r.body.capabilities.sendsWhatsApp, false);
   ok("it produces actionable next steps", Array.isArray(r.body.nextSteps));
 
@@ -2864,6 +2870,7 @@ async function testRouter() {
    Runs near the end: resetting the driver cache replaces the in-memory store. */
 async function testStorageSafety() {
   section("Storage safety — no memory driver on hosted deployments");
+  if (D1_MODE) { console.log("  (skipped: memory-driver guard; D1 is a valid hosted driver)"); return; }
 
   process.env.VERCEL = "1";
   db._resetDriverCache();

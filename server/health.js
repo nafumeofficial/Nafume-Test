@@ -71,8 +71,8 @@ async function probeDatabase() {
       latencyMs: Date.now() - started,
       error: missingTable ? "schema_not_applied" : "unreachable",
       hint: missingTable
-        ? "Run db/schema.sql in the Supabase SQL editor."
-        : "Check SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY, and that the project is not paused."
+        ? (db.driverName() === "d1" ? "Run db/d1/schema.sql: npx wrangler d1 execute nafume --remote --file db/d1/schema.sql" : "Run db/schema.sql in the Supabase SQL editor.")
+        : (db.driverName() === "d1" ? "Check the D1 binding (DB) in wrangler.jsonc." : "Check SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY, and that the project is not paused.")
     };
   }
 }

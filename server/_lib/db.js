@@ -13,6 +13,12 @@
  *     The service-role key bypasses RLS, so it MUST stay server-side only.
  *     It is never sent to the browser by any endpoint in this repo.
  *
+ *   driver "d1"  (Cloudflare Workers)
+ *     Talks to a Cloudflare D1 (SQLite) database through the Worker's `DB`
+ *     binding — no network credentials, no public endpoint. The Worker entry
+ *     (worker/index.js) hands the binding over with setD1Binding(env.DB).
+ *     The schema lives in db/d1/schema.sql. See server/_lib/db-d1.js.
+ *
  *   driver "memory"  (local development + automated tests ONLY)
  *     In-process objects, optionally mirrored to a JSON file (NAFUME_DB_FILE).
  *     Enforces the same UNIQUE constraints as schema.sql so idempotency logic
@@ -21,8 +27,9 @@
  *     endpoints refuse to pretend they persisted anything when it isn't set.
  *
  * Driver selection:
- *   NAFUME_DB_DRIVER = "supabase" | "memory"   (optional explicit override)
- *   otherwise: "supabase" when SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY exist,
+ *   NAFUME_DB_DRIVER = "d1" | "supabase" | "memory"   (optional explicit override)
+ *   otherwise: "d1" when a D1 binding has been supplied (Cloudflare Workers),
+ *              "supabase" when SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY exist,
  *              otherwise unconfigured (every call throws DbNotConfiguredError).
  *
  * Query shape (identical across drivers so tests mean something):
@@ -40,6 +47,7 @@
 
 const crypto = require("crypto");
 const fs     = require("fs");
+const { createD1Driver } = require("./db-d1");
 
 /* ── Errors ──────────────────────────────────────────────────────────────── */
 
@@ -376,10 +384,29 @@ function createSupabaseDriver(baseUrl, serviceKey, timeoutMs) {
 
 let _driver;
 let _resolved = false;
+let _d1Binding = null;
+
+/* Called by the Worker for every request (cheap: compares identity). */
+function setD1Binding(binding) {
+  if (binding === _d1Binding) return;
+  _d1Binding = binding || null;
+  _driver = undefined; _resolved = false;
+}
 
 function resolveDriver() {
   if (_resolved) return _driver;
   _resolved = true;
+
+  const wantD1 = String(process.env.NAFUME_DB_DRIVER || "").trim().toLowerCase() === "d1" ||
+                 (!String(process.env.NAFUME_DB_DRIVER || "").trim() && !!globalThis.__NAFUME_CLOUDFLARE);
+  if (wantD1) {
+    if (!_d1Binding) { _driver = null; return _driver; }
+    _driver = createD1Driver(_d1Binding, {
+      DbError: DbError, UniqueViolationError: UniqueViolationError,
+      normalizeCondition: normalizeCondition, TABLES: TABLES
+    });
+    return _driver;
+  }
 
   const explicit = String(process.env.NAFUME_DB_DRIVER || "").trim().toLowerCase();
   const url      = String(process.env.SUPABASE_URL || "").trim();
@@ -410,9 +437,10 @@ function resolveDriver() {
 /* Test/dev hook: lets the local harness swap drivers between cases. */
 function _resetDriverCache() { _driver = undefined; _resolved = false; }
 
-/* True on Vercel (any environment) or when NODE_ENV=production. */
+/* True on Vercel or Cloudflare Workers (any environment) or when NODE_ENV=production. */
 function isHostedRuntime() {
   return !!String(process.env.VERCEL || "").trim() ||
+         !!globalThis.__NAFUME_CLOUDFLARE ||
          String(process.env.NODE_ENV || "").trim().toLowerCase() === "production";
 }
 
@@ -423,7 +451,7 @@ function driverName()   { const d = resolveDriver(); return d ? d.name : "none";
    stored verification codes). The secret itself never leaves this module;
    callers get HMAC_SHA256(secret, label), distinct per label. */
 function deriveServerKey(label) {
-  const k = String(process.env.SUPABASE_SERVICE_ROLE_KEY || "").trim();
+  const k = String(process.env.NAFUME_SERVER_SECRET || process.env.SUPABASE_SERVICE_ROLE_KEY || "").trim();
   if (!k) return null;
   return crypto.createHmac("sha256", k).update("nafume-derived|" + String(label)).digest();
 }
@@ -437,7 +465,7 @@ function requireDriver() {
   const d = resolveDriver();
   if (!d) {
     throw new DbNotConfiguredError(
-      "Database is not configured. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.");
+      "Database is not configured. Bind a D1 database (DB) or set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.");
   }
   return d;
 }
@@ -464,7 +492,7 @@ function nowISO() { return new Date().toISOString(); }
 module.exports = {
   select, selectOne, insert, update, count,
   newId, nowISO,
-  isConfigured, driverName, memoryDriverRefused, isHostedRuntime,
+  isConfigured, driverName, memoryDriverRefused, isHostedRuntime, setD1Binding,
   DbNotConfiguredError, DbError, UniqueViolationError,
   UNIQUE_KEYS, TABLES,
   supabaseAuthHeaders, deriveServerKey,
