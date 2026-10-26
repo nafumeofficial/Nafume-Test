@@ -1761,6 +1761,249 @@ async function testDeskShippingSync() {
   mocks.state.deskUpdates.length = 0;
 }
 
+/* ══ Order emails: received, confirmed, shipped ══════════════════════════════
+   COD and WhatsApp orders used to send nothing. Each message goes out once, to the
+   right person, and an email outage never breaks a checkout. */
+async function testOrderEmails() {
+  section("Order emails (COD, WhatsApp, shipped)");
+
+  const admin = { Authorization: "Bearer " + process.env.ADMIN_API_TOKEN };
+  const adminPost = function (orderId, action, extra) {
+    return api.post("/api/admin/orders", Object.assign({ orderId: orderId, action: action }, extra || {}), admin);
+  };
+  const items = [{ id: "red-spirit", qty: 1 }];
+  const client = makeClient();
+  const mailFor = function (to, pattern) {
+    return mocks.state.emails.filter(function (m) {
+      return [].concat(m.to || []).map(String).indexOf(to) !== -1 && pattern.test(m.subject || "");
+    });
+  };
+  const TEAM = "nafume.official@gmail.com";
+  mocks.state.emails.length = 0;
+
+  // ── COD ──
+  const ship = shippingFor(730);
+  let r = await client.post("/api/orders/create-cod", { items: items, shipping: ship });
+  eq("COD order placed", r.status, 200);
+  const codId = r.body.order.orderId;
+  let mine = mailFor(ship.email, /received your NAFUME order/);
+  eq("the customer gets a confirmation email", mine.length, 1);
+  ok("…naming the order", mine[0].subject.indexOf(codId) !== -1);
+  ok("…saying it is Cash on Delivery with the amount to keep ready", /keep/i.test(mine[0].html) && mine[0].html.indexOf(String(r.body.order.totals.total)) !== -1);
+  ok("…with a link to the order page", mine[0].html.indexOf("/pages/order/confirmation?orderId=" + encodeURIComponent(codId)) !== -1);
+  let team = mailFor(TEAM, new RegExp("COD order " + codId));
+  eq("the team gets an alert", team.length, 1);
+  ok("…with the customer's phone and address", team[0].html.indexOf(ship.phone) !== -1 && team[0].html.indexOf(ship.pin) !== -1);
+
+  // ── a double-click does not email twice ──
+  mocks.state.emails.length = 0;
+  const dup = shippingFor(731);
+  await Promise.all([1, 2, 3].map(function () { return client.post("/api/orders/create-cod", { items: items, shipping: dup }); }));
+  eq("a double-click sends the customer ONE email", mailFor(dup.email, /received your NAFUME order/).length, 1);
+
+  // ── WhatsApp ──
+  mocks.state.emails.length = 0;
+  const wship = shippingFor(732);
+  r = await client.post("/api/orders/create-whatsapp", { items: items, shipping: wship });
+  const waId = r.body.order.orderId;
+  mine = mailFor(wship.email, /One last step/);
+  eq("a WhatsApp order emails the customer", mine.length, 1);
+  ok("…telling them to send it on WhatsApp", /SEND ORDER ON WHATSAPP/.test(mine[0].html) && /not confirmed yet/i.test(mine[0].html));
+  team = mailFor(TEAM, new RegExp("WhatsApp order " + waId));
+  eq("…and alerts the team", team.length, 1);
+  ok("…saying to wait for the customer's message", /Waiting for the customer/.test(team[0].html));
+
+  // ── staff confirm → customer is told ──
+  mocks.state.emails.length = 0;
+  r = await adminPost(waId, "confirm_whatsapp");
+  eq("staff confirm the order", r.status, 200);
+  eq("the customer is told it is confirmed", mailFor(wship.email, /is confirmed/).length, 1);
+
+  // ── shipped (through the admin API) ──
+  mocks.state.emails.length = 0;
+  r = await adminPost(waId, "mark_shipped", { awb: "AWB-777", courierName: "Delhivery" });
+  eq("staff mark it shipped", r.status, 200);
+  mine = mailFor(wship.email, /has shipped/);
+  eq("the customer gets a shipped email", mine.length, 1);
+  ok("…with the courier", mine[0].html.indexOf("Delhivery") !== -1);
+  ok("…and the tracking number", mine[0].html.indexOf("AWB-777") !== -1);
+  ok("…and a link to track it", mine[0].html.indexOf("/pages/order/track-order?order=" + encodeURIComponent(waId)) !== -1);
+  r = await adminPost(waId, "mark_shipped", { awb: "AWB-777", courierName: "Delhivery" });
+  eq("saving the tracking again does not email again", mailFor(wship.email, /has shipped/).length, 1);
+
+  // ── shipped (through the Desk) ──
+  mocks.state.emails.length = 0;
+  const dship = shippingFor(733);
+  r = await client.post("/api/orders/create-cod", { items: items, shipping: dship });
+  const deskId = r.body.order.orderId;
+  mocks.state.emails.length = 0;
+  mocks.state.deskUpdates.length = 0;
+  mocks.state.deskUpdates.push({ orderId: deskId, status: "shipped", courier: "DTDC", awb: "DT42", paid: false });
+  const cron = { Authorization: "Bearer " + process.env.CRON_SECRET };
+  await api.post("/api/jobs/drain-desk", {}, cron);
+  mine = mailFor(dship.email, /has shipped/);
+  eq("shipping in the Desk also emails the customer", mine.length, 1);
+  ok("…with the Desk's courier and tracking number", mine[0].html.indexOf("DTDC") !== -1 && mine[0].html.indexOf("DT42") !== -1);
+  ok("…reminding a COD customer to keep cash ready", /keep/i.test(mine[0].html));
+  await api.post("/api/jobs/drain-desk", {}, cron);
+  eq("the next pull does not email again", mailFor(dship.email, /has shipped/).length, 1);
+  mocks.state.deskUpdates.length = 0;
+
+  // ── Desk confirms a WhatsApp order ──
+  const w2 = shippingFor(734);
+  r = await client.post("/api/orders/create-whatsapp", { items: items, shipping: w2 });
+  const w2id = r.body.order.orderId;
+  mocks.state.emails.length = 0;
+  mocks.state.deskUpdates.push({ orderId: w2id, status: "confirmed" });
+  await api.post("/api/jobs/drain-desk", {}, cron);
+  eq("confirming in the Desk emails the customer", mailFor(w2.email, /is confirmed/).length, 1);
+  mocks.state.deskUpdates.length = 0;
+
+  // ── an email outage never breaks a checkout; nothing is lost ──
+  mocks.state.emails.length = 0;
+  mocks.state.failResend = true;
+  const down = shippingFor(735);
+  r = await client.post("/api/orders/create-cod", { items: items, shipping: down });
+  eq("checkout succeeds while the email service is down", r.status, 200);
+  const rows = await db.select("outbound_messages", { where: { related_id: r.body.order.orderId } });
+  ok("the emails are kept in the outbox for a retry", rows.length >= 2 && rows.every(function (x) { return x.status !== "sent"; }), rows.map(function (x) { return x.status; }));
+  mocks.state.failResend = false;
+  r = await api.post("/api/jobs/drain-outbox", {}, cron);
+  eq("the retry job runs", r.status, 200);
+  ok("…and delivers them once the service is back", mailFor(down.email, /received your NAFUME order/).length >= 1);
+
+  // ── no email provider configured at all ──
+  const savedKey = process.env.RESEND_API_KEY;
+  delete process.env.RESEND_API_KEY;
+  mocks.state.emails.length = 0;
+  r = await client.post("/api/orders/create-cod", { items: items, shipping: shippingFor(736) });
+  eq("checkout works with email switched off", r.status, 200);
+  eq("…and sends nothing", mocks.state.emails.length, 0);
+  process.env.RESEND_API_KEY = savedKey;
+}
+
+/* ══ Forgot password ═════════════════════════════════════════════════════════ */
+async function testPasswordReset() {
+  section("Forgot password");
+
+  const details = shippingFor(740);
+  const d = { name: details.name, email: details.email, phone: details.phone, password: "OldPass123" };
+  const owner = makeClient();
+  const reg = await registerAndVerify(owner, d);
+  eq("an account exists (email verified)", reg.verify.status, 200);
+  let r = await owner.get("/api/account/me");
+  eq("…and is signed in", r.body.authenticated, true);
+
+  // Past the 30-second resend cooldown, as if the customer waited.
+  const waited = function (email) {
+    return db.update("verification_challenges", { where: { identifier: email, purpose: "password_reset" },
+                                                  set: { last_sent_at: "2000-01-01T00:00:00.000Z" } });
+  };
+  const start = async function (email, client) {
+    await waited(email);
+    mocks.state.emails.length = 0;
+    return (client || makeClient()).post("/api/account/forgot", { email: email });
+  };
+  const resetMails = function (to) {
+    return mocks.state.emails.filter(function (m) { return [].concat(m.to).indexOf(to) !== -1 && /verification code/i.test(m.subject); });
+  };
+
+  // ── asking for a code ──
+  r = await start(d.email);
+  eq("asking for a reset code works", r.status, 200);
+  eq("a code email is sent", resetMails(d.email).length, 1);
+  ok("…saying it is to reset the password", /reset your NAFUME password/.test(resetMails(d.email)[0].html));
+  ok("…and the code itself is not stored in the outbox", JSON.stringify(await db.select("outbound_messages", {})).indexOf(mocks.lastCodeFor(d.email)) === -1);
+  const real = r.body;
+  const shape = Object.keys(real).sort().join(",");
+
+  // Pressing "Send code" twice quickly returns the same, still-working challenge.
+  mocks.state.emails.length = 0;
+  const twice = await makeClient().post("/api/account/forgot", { email: d.email });
+  eq("asking twice within the cooldown still answers 200", twice.status, 200);
+  eq("…returns the SAME challenge", twice.body.challengeId, real.challengeId);
+  eq("…without sending a second email", resetMails(d.email).length, 0);
+
+  // ── it never reveals whether an account exists ──
+  const noAcct = await start("nobody-" + Date.now() + "@example.com");
+  eq("an unknown email gets the same status", noAcct.status, real ? 200 : 0);
+  eq("…the same fields", Object.keys(noAcct.body).sort().join(","), shape);
+  eq("…the same message", noAcct.body.message, real.message);
+  ok("…with a challenge id that looks the same", /^[0-9a-f-]{36}$/i.test(noAcct.body.challengeId));
+  eq("…but no email goes out", resetMails("nobody@example.com").length + mocks.state.emails.length, 0);
+  const guest = shippingFor(741);
+  await checkout([{ id: "seduction", qty: 1 }], guest);                       // a guest, never registered
+  const g = await start(guest.email);
+  eq("a guest with no account gets the same answer", g.status, 200);
+  eq("…and no email", mocks.state.emails.length, 0);
+  r = await makeClient().post("/api/account/forgot", { email: "not-an-email" });
+  eq("something that is not an email is rejected", r.status, 400);
+
+  // ── the reset itself ──
+  const fresh = await start(d.email);
+  const code = mocks.lastCodeFor(d.email);
+  const cid = fresh.body.challengeId;
+  const c = makeClient();
+  r = await c.post("/api/account/reset", { challengeId: cid, code: code, newPassword: "short" });
+  eq("a weak new password is refused", r.status, 400);
+  r = await c.post("/api/account/reset", { challengeId: cid, code: code === "000000" ? "111111" : "000000", newPassword: "NewPass456" });
+  eq("a wrong code is refused", r.status, 422);
+  ok("…and tells how many tries are left", typeof r.body.attemptsRemaining === "number");
+  r = await c.post("/api/account/reset", { challengeId: cid, code: code, newPassword: "NewPass456" });
+  eq("the right code resets the password", r.status, 200);
+  ok("…the customer is NOT signed in automatically", !hasSessionCookie(r));
+  eq("the old session is signed out everywhere", (await owner.get("/api/account/me")).body.authenticated, false);
+  r = await makeClient().post("/api/account/login", { identifier: d.email, password: "OldPass123" });
+  eq("the OLD password no longer works", r.status, 401);
+  r = await makeClient().post("/api/account/login", { identifier: d.email, password: "NewPass456" });
+  eq("the NEW password works", r.status, 200);
+  eq("a security notice is emailed", mocks.state.emails.filter(function (m) { return /password was changed/i.test(m.subject); }).length, 1);
+  r = await c.post("/api/account/reset", { challengeId: cid, code: code, newPassword: "Another789" });
+  eq("the same code cannot be used twice", r.status, 410);
+  r = await makeClient().post("/api/account/login", { identifier: d.email, password: "NewPass456" });
+  eq("…and the password is unchanged by the replay", r.status, 200);
+
+  // ── the code only works for what it was issued for ──
+  const other = await start(d.email);
+  const otherCode = mocks.lastCodeFor(d.email);
+  r = await makeClient().post("/api/account/verify", { challengeId: other.body.challengeId, code: otherCode });
+  eq("a reset code cannot be used to register or sign in", r.status, 410);
+
+  // ── made-up ids never work ──
+  r = await makeClient().post("/api/account/reset", { challengeId: noAcct.body.challengeId, code: "123456", newPassword: "NewPass456" });
+  eq("a made-up challenge id cannot reset anything", r.status, 410);
+  r = await makeClient().post("/api/account/reset", { challengeId: "nonsense", code: "123456", newPassword: "NewPass456" });
+  eq("junk is refused", r.status, 410);
+
+  // ── a lockout is cleared by a reset ──
+  const lockShip = shippingFor(742);
+  const lk = { name: lockShip.name, email: lockShip.email, phone: lockShip.phone, password: "LockPass123" };
+  await registerAndVerify(makeClient(), lk);
+  for (let i = 0; i < 8; i++) await makeClient().post("/api/account/login", { identifier: lk.email, password: "wrongwrong1" });
+  r = await makeClient().post("/api/account/login", { identifier: lk.email, password: "LockPass123" });
+  eq("the account is locked after repeated failures", r.status, 423);
+  const lf = await start(lk.email);
+  await makeClient().post("/api/account/reset", { challengeId: lf.body.challengeId, code: mocks.lastCodeFor(lk.email), newPassword: "Unlocked456" });
+  r = await makeClient().post("/api/account/login", { identifier: lk.email, password: "Unlocked456" });
+  eq("a reset unlocks the account", r.status, 200);
+
+  // ── limits ──
+  const spam = "spam-" + Date.now() + "@example.com";
+  const statuses = [];
+  for (let i = 0; i < 7; i++) statuses.push((await makeClient().post("/api/account/forgot", { email: spam })).status);
+  ok("asking again and again for one email is limited, account or not", statuses.indexOf(429) !== -1, statuses);
+
+  // ── an account whose email was never verified cannot be reset by email ──
+  const uv = shippingFor(743);
+  await checkout([{ id: "seduction", qty: 1 }], uv);
+  const row = await db.selectOne("customers", { email_normalized: uv.email });
+  await db.insert("customer_auth", { id: db.newId(), customer_id: row.id, password_hash: await require("../server/_lib/auth").hashPassword("Unverified123"), failed_attempts: 0 });
+  mocks.state.emails.length = 0;
+  r = await makeClient().post("/api/account/forgot", { email: uv.email });
+  eq("an unverified email gets the same answer", r.status, 200);
+  eq("…but no code is sent (typing an email proves nothing)", mocks.state.emails.length, 0);
+}
+
 async function testDiscounts() {
   section("Discount codes (server-authoritative)");
 
@@ -3323,7 +3566,7 @@ async function main() {
     testPricing, testCheckoutValidation, testHappyPath, testNormalization,
     testIdempotency, testTamperedPayments, testRazorpayOutage, testRepeatCustomer,
     testWhatsAppConsent, testAccounts, testOrderLookup, testLeads, testQuiz,
-    testDeliveryAndReviews, testWebhookRecovery, testCodDoubleSubmit, testWhatsAppOrders, testDeskSync, testDeskShippingSync, testEmailSender,
+    testDeliveryAndReviews, testWebhookRecovery, testCodDoubleSubmit, testWhatsAppOrders, testDeskSync, testDeskShippingSync, testEmailSender, testOrderEmails, testPasswordReset,
     testDiscounts, testReconciliation, testOrderOwnership, testOutbox,
     testWhatsAppAdapter, testHealth, testAdversarial,
     // launch-readiness regression suites

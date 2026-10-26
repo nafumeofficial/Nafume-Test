@@ -271,6 +271,8 @@
                 '<input id="login-pw" class="nf-auth-input" type="password" autocomplete="current-password" ' +
                   'placeholder="Your password" required/>' +
               '</div>' +
+              '<p class="nf-auth-alt" style="text-align:right;margin:-6px 0 14px;">' +
+                '<a href="#" id="forgot-link">Forgot password?</a></p>' +
               '<button type="submit" class="nf-auth-submit" id="login-submit">Sign in</button>' +
             '</form>' +
 
@@ -309,6 +311,10 @@
 
         wireLogin();
         wireOtp();
+        document.getElementById("forgot-link").addEventListener("click", function (e) {
+          e.preventDefault();
+          renderForgot();
+        });
       }
 
       /* After signing in, return to the page that sent the customer here (e.g.
@@ -362,6 +368,123 @@
               return;
             }
             afterSignIn();
+          });
+        });
+      }
+
+      /* ── forgot password ─────────────────────────────────────────────────
+         Step 1: email → we send a 6-digit code (we never say whether an account exists).
+         Step 2: code + new password → password changed, then back to sign in.      */
+
+      function renderForgot(prefill) {
+        root.innerHTML =
+          '<div class="nf-auth-wrap">' +
+            '<nav class="acct-breadcrumb-nav" aria-label="Breadcrumb" style="margin-bottom:22px;">' +
+              '<a href="/" class="acct-bc-link">Home</a>' +
+              '<span class="acct-bc-sep" aria-hidden="true">&#8250;</span>' +
+              '<span class="acct-bc-current">Reset password</span>' +
+            '</nav>' +
+            '<h1 class="nf-auth-title">Reset your password</h1>' +
+            '<p class="nf-auth-sub" id="fp-sub">Enter the email on your account and we\'ll send you a 6-digit code.</p>' +
+            '<p class="nf-auth-status" id="fp-status" role="status" aria-live="polite" style="display:none;"></p>' +
+
+            '<form id="fp-step1" novalidate>' +
+              '<div class="nf-auth-field">' +
+                '<label class="nf-auth-label" for="fp-email">Email</label>' +
+                '<input id="fp-email" class="nf-auth-input" type="email" autocomplete="email" placeholder="you@example.com" required/>' +
+              '</div>' +
+              '<button type="submit" class="nf-auth-submit" id="fp-send">Send code</button>' +
+            '</form>' +
+
+            '<form id="fp-step2" novalidate style="display:none;">' +
+              '<div class="nf-auth-field">' +
+                '<label class="nf-auth-label" for="fp-code">6-digit code</label>' +
+                '<input id="fp-code" class="nf-auth-input" type="text" inputmode="numeric" maxlength="6" ' +
+                  'autocomplete="one-time-code" placeholder="······" style="letter-spacing:0.3em;text-align:center;"/>' +
+              '</div>' +
+              '<div class="nf-auth-field">' +
+                '<label class="nf-auth-label" for="fp-pw">New password</label>' +
+                '<input id="fp-pw" class="nf-auth-input" type="password" autocomplete="new-password" ' +
+                  'placeholder="At least 8 characters, with a letter and a number"/>' +
+              '</div>' +
+              '<button type="submit" class="nf-auth-submit" id="fp-reset">Set new password</button>' +
+              '<p class="nf-auth-alt">' +
+                '<button type="button" id="fp-resend" style="background:none;border:none;text-decoration:underline;color:#111;font-size:12.5px;">Resend code</button>' +
+                '<span id="fp-countdown" style="color:#999;"></span>' +
+              '</p>' +
+            '</form>' +
+
+            '<p class="nf-auth-alt"><a href="#" id="fp-back">Back to sign in</a></p>' +
+          '</div>';
+
+        var challengeId = null, timer = null;
+        var emailEl = document.getElementById("fp-email");
+        if (prefill) emailEl.value = prefill;
+        var sendBtn = document.getElementById("fp-send");
+        var resetBtn = document.getElementById("fp-reset");
+        var resendBtn = document.getElementById("fp-resend");
+        var countdown = document.getElementById("fp-countdown");
+
+        function startCountdown(secs) {
+          clearInterval(timer);
+          resendBtn.disabled = true;
+          var left = secs || 30;
+          countdown.textContent = " (" + left + "s)";
+          timer = setInterval(function () {
+            left--;
+            if (left <= 0) { clearInterval(timer); resendBtn.disabled = false; countdown.textContent = ""; }
+            else countdown.textContent = " (" + left + "s)";
+          }, 1000);
+        }
+
+        document.getElementById("fp-back").addEventListener("click", function (e) {
+          e.preventDefault(); clearInterval(timer); renderLogin();
+        });
+
+        document.getElementById("fp-step1").addEventListener("submit", function (e) {
+          e.preventDefault();
+          hideStatus("fp-status");
+          var email = emailEl.value.trim();
+          if (!email) { setStatus("fp-status", "Please enter your email address.", "error"); return; }
+          sendBtn.disabled = true; sendBtn.textContent = "Sending…";
+          API.forgotPassword(email).then(function (res) {
+            sendBtn.disabled = false; sendBtn.textContent = "Send code";
+            if (!res.ok) { setStatus("fp-status", res.message || "We couldn't send a code. Please try again.", "error"); return; }
+            challengeId = res.data.challengeId;
+            document.getElementById("fp-step1").style.display = "none";
+            document.getElementById("fp-step2").style.display = "block";
+            document.getElementById("fp-sub").textContent = "Check your inbox (and spam folder) for the code.";
+            setStatus("fp-status", res.data.message || res.message || "Code sent.", "info");
+            startCountdown(res.data.resendAfterSeconds);
+            document.getElementById("fp-code").focus();
+          });
+        });
+
+        resendBtn.addEventListener("click", function () {
+          hideStatus("fp-status");
+          if (!challengeId) return;
+          resendBtn.disabled = true;
+          API.resendCode(challengeId, "password_reset").then(function (res) {
+            if (!res.ok) { resendBtn.disabled = false; setStatus("fp-status", res.message || "We couldn't send another code.", "error"); return; }
+            setStatus("fp-status", "If an account exists for that email, a new code is on its way.", "info");
+            startCountdown(res.data && res.data.resendAfterSeconds);
+          });
+        });
+
+        document.getElementById("fp-step2").addEventListener("submit", function (e) {
+          e.preventDefault();
+          hideStatus("fp-status");
+          var code = document.getElementById("fp-code").value.replace(/\D/g, "");
+          var pw   = document.getElementById("fp-pw").value;
+          if (code.length !== 6) { setStatus("fp-status", "Please enter the 6-digit code from your email.", "error"); return; }
+          if (!pw) { setStatus("fp-status", "Please choose a new password.", "error"); return; }
+          resetBtn.disabled = true; resetBtn.textContent = "Saving…";
+          API.resetPassword(challengeId, code, pw).then(function (res) {
+            resetBtn.disabled = false; resetBtn.textContent = "Set new password";
+            if (!res.ok) { setStatus("fp-status", res.message || "We couldn't reset your password. Please try again.", "error"); return; }
+            clearInterval(timer);
+            renderLogin();
+            setStatus("login-status", "Your password has been updated. Please sign in with your new password.", "success");
           });
         });
       }

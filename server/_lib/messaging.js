@@ -482,6 +482,101 @@ function reviewRequestEmail(order, reviewUrl) {
   );
 }
 
+
+/* ── order lifecycle emails (COD / WhatsApp orders, confirmation, shipping) ── */
+
+function itemRows(items) {
+  return (items || []).map(function (i) {
+    return '<tr><td style="padding:6px 0;border-bottom:1px solid #eee;">' +
+      escapeHtml(i.product_name) + ' &times; ' + escapeHtml(i.quantity) +
+      '</td><td style="padding:6px 0;border-bottom:1px solid #eee;text-align:right;">' +
+      money(i.line_total) + '</td></tr>';
+  }).join("");
+}
+function button(url, label) {
+  return '<p style="margin:22px 0;"><a href="' + escapeHtml(url) + '" style="background:#111;color:#fff;' +
+    'padding:12px 22px;text-decoration:none;font-size:13px;letter-spacing:.08em;">' + escapeHtml(label) + '</a></p>';
+}
+
+/* "We've got your order" — Cash on Delivery or Order on WhatsApp. */
+function orderReceivedCustomerEmail(order, items, siteUrl) {
+  const wa  = order.payment_method === "whatsapp";
+  const url = siteUrl ? siteUrl + "/pages/order/confirmation?orderId=" + encodeURIComponent(order.order_id) : "";
+  const lead = wa
+    ? 'We\'ve saved your order, but it is <strong>not confirmed yet</strong>. To confirm it, open your order page ' +
+      'and tap <strong>Send order on WhatsApp</strong>. We will confirm it there and share payment details if needed.'
+    : 'Your Cash on Delivery order is confirmed and is being prepared. Please keep <strong>' +
+      money(order.amount_total) + '</strong> ready for the courier.';
+  return BRAND_WRAP(
+    '<h2 style="color:#111;">' + (wa ? 'One last step for your order' : 'Thank you for your order') + '</h2>' +
+    '<p style="font-size:14px;">Hi ' + escapeHtml(order.ship_name || "there") + ', ' + lead + '</p>' +
+    '<p style="font-size:13px;color:#555;">Order ID: <strong>' + escapeHtml(order.order_id) + '</strong></p>' +
+    '<table style="width:100%;border-collapse:collapse;font-size:13px;">' + itemRows(items) + '</table>' +
+    '<p style="font-size:14px;font-weight:bold;text-align:right;margin-top:10px;">Total: ' + money(order.amount_total) + '</p>' +
+    (url ? button(url, wa ? "SEND ORDER ON WHATSAPP" : "VIEW YOUR ORDER") : "") +
+    '<p style="font-size:12px;color:#888;">Questions? Just reply to this email.</p>'
+  );
+}
+
+/* Heads-up to the team: a COD / WhatsApp order has come in. */
+function orderReceivedTeamEmail(order, items) {
+  const wa = order.payment_method === "whatsapp";
+  const address = [order.ship_line1, order.ship_line2, order.ship_city, order.ship_state, order.ship_pincode]
+    .filter(Boolean).map(escapeHtml).join(", ");
+  return BRAND_WRAP(
+    '<h2 style="color:#111;">New ' + (wa ? 'WhatsApp' : 'Cash on Delivery') + ' order</h2>' +
+    '<p style="font-size:13px;color:#555;">Order ID: <strong>' + escapeHtml(order.order_id) + '</strong>' +
+    (wa ? '<br/><strong>Waiting for the customer\'s WhatsApp message. Confirm it once it arrives.</strong>' : '') + '</p>' +
+    '<p style="font-size:13px;">Name: ' + escapeHtml(order.ship_name) + '<br/>Phone: ' + escapeHtml(order.ship_phone) +
+    '<br/>Email: ' + escapeHtml(order.ship_email) + '<br/>Address: ' + address + '</p>' +
+    '<table style="width:100%;border-collapse:collapse;font-size:13px;">' + itemRows(items) + '</table>' +
+    '<p style="font-size:14px;font-weight:bold;text-align:right;margin-top:10px;">' +
+    (wa ? 'Total' : 'Collect on delivery') + ': ' + money(order.amount_total) + '</p>' +
+    '<p style="font-size:12px;color:#888;">It is also in the NAFUME Desk dashboard.</p>'
+  );
+}
+
+/* A WhatsApp order the team has now confirmed. */
+function orderConfirmedCustomerEmail(order, items, siteUrl) {
+  const url = siteUrl ? siteUrl + "/pages/order/confirmation?orderId=" + encodeURIComponent(order.order_id) : "";
+  return BRAND_WRAP(
+    '<h2 style="color:#111;">Your order is confirmed</h2>' +
+    '<p style="font-size:14px;">Hi ' + escapeHtml(order.ship_name || "there") + ', we\'ve confirmed your NAFUME order. ' +
+    'We dispatch within 24 hours and will email your tracking details.</p>' +
+    '<p style="font-size:13px;color:#555;">Order ID: <strong>' + escapeHtml(order.order_id) + '</strong></p>' +
+    '<table style="width:100%;border-collapse:collapse;font-size:13px;">' + itemRows(items) + '</table>' +
+    '<p style="font-size:14px;font-weight:bold;text-align:right;margin-top:10px;">Total: ' + money(order.amount_total) + '</p>' +
+    (url ? button(url, "VIEW YOUR ORDER") : "")
+  );
+}
+
+/* Shipped — with courier and tracking number. */
+function orderShippedCustomerEmail(order, siteUrl) {
+  const url = siteUrl ? siteUrl + "/pages/order/track-order?order=" + encodeURIComponent(order.order_id) : "";
+  const track = order.awb
+    ? '<p style="font-size:14px;">Courier: <strong>' + escapeHtml(order.courier_name || "—") + '</strong><br/>' +
+      'Tracking number: <strong>' + escapeHtml(order.awb) + '</strong></p>'
+    : '<p style="font-size:14px;">Tracking details will appear on your order page as soon as the courier shares them.</p>';
+  return BRAND_WRAP(
+    '<h2 style="color:#111;">Your order is on its way</h2>' +
+    '<p style="font-size:14px;">Hi ' + escapeHtml(order.ship_name || "there") + ', your NAFUME order ' +
+    '<strong>' + escapeHtml(order.order_id) + '</strong> has shipped.</p>' + track +
+    (url ? button(url, "TRACK YOUR ORDER") : "") +
+    (order.payment_method === "cod" && order.payment_status !== "paid"
+      ? '<p style="font-size:13px;color:#555;">Please keep ' + money(order.amount_total) + ' ready for the courier.</p>' : '')
+  );
+}
+
+/* Security notice after a password reset. */
+function passwordChangedEmail() {
+  return BRAND_WRAP(
+    '<h2 style="color:#111;">Your NAFUME password was changed</h2>' +
+    '<p style="font-size:14px;">The password for your NAFUME account was just reset. You were signed out everywhere.</p>' +
+    '<p style="font-size:13px;color:#555;">If this was you, nothing more to do. If it wasn\'t, reply to this email right away ' +
+    'and reset your password again.</p>'
+  );
+}
+
 module.exports = {
   send, queue, deliverQueuedRow, escapeHtml, money,
   sendWhatsApp, hasWhatsAppMarketingConsent,
@@ -491,5 +586,7 @@ module.exports = {
   get CUSTOMER_FROM() { return customerFrom(); },
   orderPaidTeamEmail, orderPaidCustomerEmail,
   leadDiscountEmail, quizResultEmail, reviewRequestEmail, verificationCodeEmail,
+  orderReceivedCustomerEmail, orderReceivedTeamEmail, orderConfirmedCustomerEmail,
+  orderShippedCustomerEmail, passwordChangedEmail,
   REDACTED_BODY
 };

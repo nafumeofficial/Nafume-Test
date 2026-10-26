@@ -237,6 +237,11 @@
   function verifyAccount(challengeId, code) {
     return post("/api/account/verify", { challengeId: challengeId, code: code });
   }
+  /* Forgot password: forgotPassword() emails a code; resetPassword() sets the new password. */
+  function forgotPassword(email) { return post("/api/account/forgot", { email: email }); }
+  function resetPassword(challengeId, code, newPassword) {
+    return post("/api/account/reset", { challengeId: challengeId, code: code, newPassword: newPassword });
+  }
   function resendCode(challengeId, purpose) {
     return post("/api/account/resend-code", { challengeId: challengeId, purpose: purpose || "account_register" });
   }
@@ -274,6 +279,7 @@
     lookupOrder: lookupOrder, toLocalOrder: toLocalOrder,
     me: me, login: login, register: register, logout: logout, updateAccount: updateAccount,
     verifyAccount: verifyAccount, resendCode: resendCode,
+    forgotPassword: forgotPassword, resetPassword: resetPassword,
     startIdentifierVerification: startIdentifierVerification,
     confirmIdentifierVerification: confirmIdentifierVerification,
     subscribeLead: subscribeLead,

@@ -17,7 +17,7 @@ const http         = require("../_lib/http");
 const auth         = require("../_lib/auth");
 const verification = require("../_lib/verification");
 
-const ALLOWED = ["account_register", "phone_login", "link_identifier"];
+const ALLOWED = ["account_register", "phone_login", "link_identifier", "password_reset"];
 
 module.exports = async function handler(req, res) {
   if (!http.guard(req, res, "POST")) return;

@@ -239,6 +239,8 @@ function makeHandler(mode) {
 
     // Show it in the Desk dashboard (queued first, so it is never lost).
     await require("../_lib/desk").queueOrder(finalOrder.order_id);
+    // Tell the customer and the team (COD and WhatsApp orders have no payment email).
+    await require("../_lib/order-emails").sendReceived(finalOrder);
 
     return http.ok(res, {
       duplicate: false,

@@ -37,7 +37,8 @@ const msg91     = require("./msg91");
 const PURPOSES = {
   account_register: "finish creating your NAFUME account",
   phone_login:      "sign in to NAFUME",
-  link_identifier:  "confirm this address for your NAFUME account"
+  link_identifier:  "confirm this address for your NAFUME account",
+  password_reset:   "reset your NAFUME password"
 };
 
 function intEnv(name, fallback) {
@@ -211,6 +212,19 @@ async function start(opts) {
   return { ok: true, challenge: publicChallenge(row) };
 }
 
+/* currentChallenge({ purpose, channel, identifier }) -> public challenge | null
+   The still-valid challenge for this purpose and identifier, if one was issued
+   moments ago. Lets "Send code" pressed twice return the SAME challenge, so the
+   code already in the inbox keeps working. */
+async function currentChallenge(opts) {
+  const row = await db.selectOne("verification_challenges", {
+    live_key: liveKey(opts.purpose, opts.channel === "phone" ? "phone" : "email", String(opts.identifier || ""))
+  });
+  if (!row || row.consumed_at || row.invalidated_at) return null;
+  if (new Date(row.expires_at).getTime() <= Date.now()) return null;
+  return publicChallenge(row);
+}
+
 /* resend({ challengeId, purpose }) -> same shape as start() */
 async function resend(opts) {
   const row = opts.challengeId ? await db.selectOne("verification_challenges", { id: String(opts.challengeId) }) : null;
@@ -367,6 +381,6 @@ async function purgeExpired() {
 }
 
 module.exports = {
-  PURPOSES, start, resend, verify, clearPayload, mask, purgeExpired,
+  PURPOSES, start, resend, verify, clearPayload, mask, purgeExpired, currentChallenge,
   _hashCode: hashCode
 };

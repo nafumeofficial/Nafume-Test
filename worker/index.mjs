@@ -166,17 +166,20 @@ export default {
     exposeEnv(env);
     configureStorage(env);
     const secret = env.CRON_SECRET || env.ADMIN_API_TOKEN;
-    const job = event.cron === "*/10 * * * *" ? "drain-desk" : "maintenance";
-    const pathname = "/api/jobs/" + job;
-    const req = await toNodeRequest(
-      new Request("https://internal.invalid" + pathname, {
-        method: "POST", headers: { authorization: "Bearer " + (secret || "") }
-      }),
-      new URL("https://internal.invalid" + pathname), { path: "jobs/" + job });
-    const res = createResponse();
+    // Every 10 minutes: Desk sync, then any customer emails still waiting in the outbox.
+    const jobs = event.cron === "*/10 * * * *" ? ["drain-desk", "drain-outbox"] : ["maintenance"];
     ctx.waitUntil((async function () {
-      try { await router(req, res); if (!res.headersSent) res.end(); }
-      catch (err) { console.error("[worker] scheduled " + job + " failed", err && err.stack || err); }
+      for (const job of jobs) {
+        const pathname = "/api/jobs/" + job;
+        const req = await toNodeRequest(
+          new Request("https://internal.invalid" + pathname, {
+            method: "POST", headers: { authorization: "Bearer " + (secret || "") }
+          }),
+          new URL("https://internal.invalid" + pathname), { path: "jobs/" + job });
+        const res = createResponse();
+        try { await router(req, res); if (!res.headersSent) res.end(); }
+        catch (err) { console.error("[worker] scheduled " + job + " failed", err && err.stack || err); }
+      }
     })());
   }
 };

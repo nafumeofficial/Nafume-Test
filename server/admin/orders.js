@@ -194,6 +194,10 @@ module.exports = async function handler(req, res) {
     if (action === "confirm_whatsapp" || action === "mark_paid" || action === "cancel" || action === "mark_delivered") {
       await require("../_lib/desk").queueOrder(fresh.order_id);
     }
+    if (action === "confirm_whatsapp") await require("../_lib/order-emails").sendConfirmed(fresh);
+    if (action === "mark_shipped" && order.fulfillment_status === "unfulfilled") {
+      await require("../_lib/order-emails").sendShipped(fresh);
+    }
     const items   = await repo.getOrderItems(fresh.id);
 
     return http.ok(res, { order: repo.publicOrder(fresh, items) });

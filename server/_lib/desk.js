@@ -211,10 +211,15 @@ async function applyUpdate(u) {
 
   if (!Object.keys(patch).length) return "unchanged";
   patch.updated_at = now;
-  await db.update("orders", { where: { id: order.id }, set: patch });
+  const rows = await db.update("orders", { where: { id: order.id }, set: patch });
   if (confirmedNow) {
     try { await discounts.markRedeemed(order.order_id); } catch (e) { console.error("[desk] redeem failed:", e && e.message); }
   }
+  // Customer emails for what just changed (each is sent at most once per order).
+  const emails = require("./order-emails");
+  const fresh = (rows && rows[0]) || order;
+  if (confirmedNow) await emails.sendConfirmed(fresh);
+  if (status === "shipped" && wasUnfulfilled) await emails.sendShipped(fresh);
   return "applied";
 }
 
