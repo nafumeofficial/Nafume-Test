@@ -4,6 +4,11 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "nafume",
   "main": "worker/index.mjs",
+  "workers_dev": true,
+  // GO-LIVE (do this last, after the Razorpay live keys are set): delete the old
+  // "www" CNAME in Cloudflare DNS, then uncomment and run `npx wrangler deploy`.
+  // "routes": [{ "pattern": "www.nafume.com", "custom_domain": true }],
+  "preview_urls": false,
   "compatibility_date": "2025-09-01",
   "compatibility_flags": ["nodejs_compat"],
 
@@ -24,7 +29,7 @@
       "binding": "DB",
       "database_name": "nafume",
       // Replace with the id printed by:  npx wrangler d1 create nafume
-      "database_id": "00000000-0000-0000-0000-000000000000"
+      "database_id": "0996fe6d-0969-4d8a-93dd-c6b791c9b7d5"
     }
   ],
 
