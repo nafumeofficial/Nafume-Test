@@ -22,9 +22,13 @@
 
 const db = require("./db");
 
-const NOTIFY_TO      = process.env.ORDER_NOTIFY_EMAIL_TO   || "nafume.official@gmail.com";
-const NOTIFY_FROM    = process.env.ORDER_NOTIFY_EMAIL_FROM || "NAFUME Orders <onboarding@resend.dev>";
-const CUSTOMER_FROM  = process.env.CUSTOMER_EMAIL_FROM     || NOTIFY_FROM;
+/* Read at call time (not at start-up): on Cloudflare the environment is only
+   populated once a request arrives. */
+function notifyTo()     { return process.env.ORDER_NOTIFY_EMAIL_TO   || "nafume.official@gmail.com"; }
+function notifyFrom()   { return process.env.ORDER_NOTIFY_EMAIL_FROM || "NAFUME Orders <onboarding@resend.dev>"; }
+function customerFrom() { return process.env.CUSTOMER_EMAIL_FROM     || notifyFrom(); }
+/* Replies go here. The sending address has no mailbox of its own. */
+function replyTo()      { return String(process.env.EMAIL_REPLY_TO || "").trim(); }
 
 /* Read at call time so a key added to the environment is honoured by warm
    instances and by the test harness without a reload. */
@@ -244,7 +248,9 @@ async function sendViaResend(to, subject, html, from, idempotencyKey) {
     const resp = await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers: headers,
-      body: JSON.stringify({ from: from || CUSTOMER_FROM, to: [to], subject: subject, html: html }),
+      body: JSON.stringify(Object.assign(
+        { from: from || customerFrom(), to: [to], subject: subject, html: html },
+        replyTo() ? { reply_to: replyTo() } : {})),
       signal: ctrl.signal
     });
     clearTimeout(timer);
@@ -480,7 +486,9 @@ module.exports = {
   send, queue, deliverQueuedRow, escapeHtml, money,
   sendWhatsApp, hasWhatsAppMarketingConsent,
   emailConfigured, whatsappConfigured, whatsappReadiness,
-  NOTIFY_TO, NOTIFY_FROM, CUSTOMER_FROM,
+  get NOTIFY_TO()     { return notifyTo(); },
+  get NOTIFY_FROM()   { return notifyFrom(); },
+  get CUSTOMER_FROM() { return customerFrom(); },
   orderPaidTeamEmail, orderPaidCustomerEmail,
   leadDiscountEmail, quizResultEmail, reviewRequestEmail, verificationCodeEmail,
   REDACTED_BODY

@@ -1619,6 +1619,30 @@ async function testDeskSync() {
   process.env.DESK_INTAKE_URL = savedUrl;
 }
 
+/* ══ Email sender and reply address ══════════════════════════════════════════ */
+async function testEmailSender() {
+  section("Email sender and reply address");
+  const keep = { from: process.env.CUSTOMER_EMAIL_FROM, reply: process.env.EMAIL_REPLY_TO };
+  mocks.state.emails.length = 0;
+
+  delete process.env.EMAIL_REPLY_TO;
+  await messagingLib.send({ to: "buyer@example.com", subject: "Plain", html: "<p>hi</p>", channel: "email" });
+  let m = mocks.state.emails[mocks.state.emails.length - 1];
+  ok("without a reply address none is sent", m && m.replyTo === null, m);
+
+  // Read at send time: changing the environment takes effect with no reload.
+  process.env.CUSTOMER_EMAIL_FROM = "NAFUME <orders@nafume.com>";
+  process.env.EMAIL_REPLY_TO      = "nafume.official@gmail.com";
+  await messagingLib.send({ to: "buyer@example.com", subject: "Branded", html: "<p>hi</p>", channel: "email" });
+  m = mocks.state.emails[mocks.state.emails.length - 1];
+  eq("the sender is the configured branded address", m.from, "NAFUME <orders@nafume.com>");
+  eq("replies go to the support inbox", m.replyTo, "nafume.official@gmail.com");
+  eq("the customer is the recipient", m.to[0], "buyer@example.com");
+
+  if (keep.from === undefined) delete process.env.CUSTOMER_EMAIL_FROM; else process.env.CUSTOMER_EMAIL_FROM = keep.from;
+  if (keep.reply === undefined) delete process.env.EMAIL_REPLY_TO; else process.env.EMAIL_REPLY_TO = keep.reply;
+}
+
 async function testDiscounts() {
   section("Discount codes (server-authoritative)");
 
@@ -3181,7 +3205,7 @@ async function main() {
     testPricing, testCheckoutValidation, testHappyPath, testNormalization,
     testIdempotency, testTamperedPayments, testRazorpayOutage, testRepeatCustomer,
     testWhatsAppConsent, testAccounts, testOrderLookup, testLeads, testQuiz,
-    testDeliveryAndReviews, testWebhookRecovery, testCodDoubleSubmit, testWhatsAppOrders, testDeskSync,
+    testDeliveryAndReviews, testWebhookRecovery, testCodDoubleSubmit, testWhatsAppOrders, testDeskSync, testEmailSender,
     testDiscounts, testReconciliation, testOrderOwnership, testOutbox,
     testWhatsAppAdapter, testHealth, testAdversarial,
     // launch-readiness regression suites

@@ -175,7 +175,7 @@ async function resend(urlStr, opts) {
     return jsonResponse(200, { id: state.resendIdempotency.get(key) });
   }
   state.emails.push({
-    to: body.to, subject: body.subject, from: body.from, html: body.html,
+    to: body.to, subject: body.subject, from: body.from, replyTo: body.reply_to || null, html: body.html,
     idempotencyKey: key || null, at: Date.now()
   });
   if (state.failResend) return jsonResponse(500, { message: "simulated" });

@@ -39,6 +39,10 @@
     "SITE_URL": "https://www.nafume.com",
     // Orders are sent here. DESK_INTAKE_SECRET (a wrangler secret) signs each request.
     "DESK_INTAKE_URL": "https://nafume-desk.pages.dev/api/intake"
+    // EMAIL: once the domain is verified in Resend and RESEND_API_KEY is set, add:
+    //   "CUSTOMER_EMAIL_FROM": "NAFUME <orders@nafume.com>",
+    //   "ORDER_NOTIFY_EMAIL_FROM": "NAFUME Orders <orders@nafume.com>",
+    //   "EMAIL_REPLY_TO": "nafume.official@gmail.com"
   },
 
   // 04:00 UTC daily: maintenance (as the old Vercel cron). Every 10 minutes: retry
