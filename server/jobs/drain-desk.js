@@ -2,8 +2,10 @@
  * GET|POST /api/jobs/drain-desk  —  retry orders that did not reach the Desk
  * ============================================================================
  * Orders are queued in `desk_events` before the dashboard is contacted (see
- * _lib/desk.js). This job retries the ones still waiting. Idempotent: the Desk
- * never creates the same order twice.
+ * _lib/desk.js). This job retries the ones still waiting (idempotent: the Desk
+ * never creates the same order twice), then asks the Desk for shipping and status
+ * changes made by the team and applies them, so the customer's Track Order page
+ * stays current.
  *
  * AUTH  Bearer CRON_SECRET or ADMIN_API_TOKEN (same rule as the other jobs).
  */
@@ -30,7 +32,8 @@ module.exports = async function handler(req, res) {
 
   try {
     const summary = await desk.drain(40);
-    return http.ok(res, { ranAt: new Date().toISOString(), summary: summary, backlog: await desk.backlog() });
+    const updates = await desk.pullUpdates();          // shipping + status changes made in the Desk
+    return http.ok(res, { ranAt: new Date().toISOString(), summary: summary, updates: updates, backlog: await desk.backlog() });
   } catch (err) {
     return http.handleError(res, err, "jobs/drain-desk");
   }

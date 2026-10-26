@@ -1643,6 +1643,124 @@ async function testEmailSender() {
   if (keep.reply === undefined) delete process.env.EMAIL_REPLY_TO; else process.env.EMAIL_REPLY_TO = keep.reply;
 }
 
+/* ══ Desk → website: shipping and status updates ═════════════════════════════
+   The team ships orders in the Desk; the website pulls those changes so the
+   customer's Track Order page shows courier and tracking number. */
+async function testDeskShippingSync() {
+  section("Desk shipping updates reach the website");
+
+  const cron  = { Authorization: "Bearer " + process.env.CRON_SECRET };
+  const items = [{ id: "red-spirit", qty: 1 }];
+  const client = makeClient();
+  const run = async function (updates) {
+    mocks.state.deskUpdates.length = 0;
+    updates.forEach(function (u) { mocks.state.deskUpdates.push(u); });
+    mocks.state.deskPulls.length = 0;
+    const r = await api.post("/api/jobs/drain-desk", {}, cron);
+    return r;
+  };
+  const row = function (id) { return db.selectOne("orders", { order_id: id }); };
+  const shippedAt   = new Date(Date.now() - 3 * 86400000).toISOString();
+  const deliveredAt = new Date(Date.now() - 1 * 86400000).toISOString();
+
+  // ── COD order shipped, then delivered ──
+  let r = await client.post("/api/orders/create-cod", { items: items, shipping: shippingFor(720) });
+  const cod = r.body.order.orderId;
+  r = await run([{ orderId: cod, status: "shipped", courier: "Delhivery", awb: "DL555", paid: false, shippedAt: shippedAt }]);
+  eq("the pull job runs", r.status, 200);
+  ok("the pull is signed", mocks.state.deskPulls.length === 1 && mocks.state.deskPulls[0].validSignature === true);
+  eq("the update was applied", r.body.updates.applied, 1);
+  let o = await row(cod);
+  eq("DB: shipped", o.fulfillment_status, "shipped");
+  eq("DB: tracking number saved", o.awb, "DL555");
+  eq("DB: courier saved", o.courier_name, "Delhivery");
+  eq("DB: shipped date comes from the Desk", o.shipped_at, shippedAt);
+  eq("DB: still not paid (cash not collected yet)", o.payment_status, "pending");
+
+  const lookup = await client.post("/api/orders/lookup", { orderId: cod, contact: shippingFor(720).email });
+  eq("the customer's Track Order lookup works", lookup.status, 200);
+  eq("…and shows the tracking number", lookup.body.order.delivery.awb, "DL555");
+  eq("…and the courier", lookup.body.order.delivery.courierName, "Delhivery");
+
+  r = await run([{ orderId: cod, status: "shipped", courier: "Delhivery", awb: "DL555", paid: false }]);
+  eq("the same update again changes nothing", r.body.updates.unchanged, 1);
+
+  r = await run([{ orderId: cod, status: "delivered", courier: "Delhivery", awb: "DL555", paid: true, deliveredAt: deliveredAt }]);
+  o = await row(cod);
+  eq("DB: delivered", o.fulfillment_status, "delivered");
+  eq("DB: delivery date from the Desk", o.delivered_at, deliveredAt);
+  eq("DB: cash collected, so paid", o.payment_status, "paid");
+
+  r = await run([{ orderId: cod, status: "shipped", paid: true }]);
+  o = await row(cod);
+  eq("a delivered order is never moved back to shipped", o.fulfillment_status, "delivered");
+
+  // ── WhatsApp order: moving it past New in the Desk confirms it ──
+  r = await client.post("/api/orders/create-whatsapp", { items: items, shipping: shippingFor(721) });
+  const wa = r.body.order.orderId;
+  eq("starts awaiting WhatsApp", (await row(wa)).order_status, "awaiting_whatsapp");
+  await run([{ orderId: wa, status: "new" }]);
+  eq("'New' in the Desk does not confirm it", (await row(wa)).order_status, "awaiting_whatsapp");
+  await run([{ orderId: wa, status: "confirmed" }]);
+  eq("'Confirmed' in the Desk confirms the website order", (await row(wa)).order_status, "confirmed");
+  await run([{ orderId: wa, status: "packed", paid: true }]);
+  o = await row(wa);
+  eq("payment received in the Desk is recorded", o.payment_status, "paid");
+  eq("…as a Desk payment", o.payment_confirmed_via, "desk");
+
+  // ── cancelling ──
+  r = await client.post("/api/orders/create-cod", { items: items, shipping: shippingFor(722) });
+  const c1 = r.body.order.orderId;
+  await run([{ orderId: c1, status: "cancelled" }]);
+  eq("cancelled in the Desk cancels an unshipped website order", (await row(c1)).order_status, "cancelled");
+
+  r = await client.post("/api/orders/create-cod", { items: items, shipping: shippingFor(723) });
+  const c2 = r.body.order.orderId;
+  await run([{ orderId: c2, status: "shipped", awb: "X1" }]);
+  await run([{ orderId: c2, status: "cancelled" }]);
+  o = await row(c2);
+  eq("a shipped order is NOT cancelled by a later Desk cancel", o.order_status === "cancelled", false);
+
+  const paidShip = shippingFor(724);
+  const pay = await checkout(items, paidShip, {}, client);
+  const online = pay.create.body.nafume_order_id;
+  await run([{ orderId: online, status: "cancelled" }]);
+  o = await row(online);
+  eq("cancelling a paid online order cancels it", o.order_status, "cancelled");
+  eq("…but the payment stays recorded as paid (refund is manual)", o.payment_status, "paid");
+  ok("…with a note for staff", /refund/i.test(o.payment_note || ""), o.payment_note);
+
+  r = await run([{ orderId: cod, status: "cancelled" }]);
+  eq("cancelling an already-delivered order does nothing", (await row(cod)).order_status === "cancelled", false);
+
+  // ── safety ──
+  r = await run([{ orderId: "NF-00000000-000", status: "shipped" }, { orderId: 5 }, null, { status: "shipped" }]);
+  eq("unknown orders and junk are skipped, not fatal", r.status, 200);
+  ok("…and counted as skipped", r.body.updates.skipped >= 3, r.body.updates);
+  r = await run([{ orderId: cod, status: "returned" }]);
+  eq("'returned' is ignored (the website has no such state)", (await row(cod)).fulfillment_status, "delivered");
+
+  const fresh = await client.post("/api/orders/create-cod", { items: items, shipping: shippingFor(725) });
+  const fid = fresh.body.order.orderId;
+  r = await run([{ orderId: fid, status: "shipped", awb: "A".repeat(500), courier: "C".repeat(500), shippedAt: "2999-01-01" }]);
+  o = await row(fid);
+  ok("a very long tracking number is cut down", (o.awb || "").length <= 60, (o.awb || "").length);
+  ok("a date far in the future is not trusted", !o.shipped_at || new Date(o.shipped_at).getTime() < Date.now() + 86400000, o.shipped_at);
+
+  // ── the Desk is down / not configured ──
+  mocks.state.deskMode = "down";
+  r = await api.post("/api/jobs/drain-desk", {}, cron);
+  eq("the job still answers 200 when the Desk is down", r.status, 200);
+  ok("…and says it could not read updates", /Desk answered 503/.test(r.body.updates.error || ""), r.body.updates);
+  mocks.state.deskMode = "ok";
+  const savedSecret = process.env.DESK_INTAKE_SECRET;
+  delete process.env.DESK_INTAKE_SECRET;
+  r = await api.post("/api/jobs/drain-desk", {}, cron);
+  ok("with the Desk switched off nothing is pulled", r.body.updates.note && r.body.updates.fetched === 0, r.body.updates);
+  process.env.DESK_INTAKE_SECRET = savedSecret;
+  mocks.state.deskUpdates.length = 0;
+}
+
 async function testDiscounts() {
   section("Discount codes (server-authoritative)");
 
@@ -3205,7 +3323,7 @@ async function main() {
     testPricing, testCheckoutValidation, testHappyPath, testNormalization,
     testIdempotency, testTamperedPayments, testRazorpayOutage, testRepeatCustomer,
     testWhatsAppConsent, testAccounts, testOrderLookup, testLeads, testQuiz,
-    testDeliveryAndReviews, testWebhookRecovery, testCodDoubleSubmit, testWhatsAppOrders, testDeskSync, testEmailSender,
+    testDeliveryAndReviews, testWebhookRecovery, testCodDoubleSubmit, testWhatsAppOrders, testDeskSync, testDeskShippingSync, testEmailSender,
     testDiscounts, testReconciliation, testOrderOwnership, testOutbox,
     testWhatsAppAdapter, testHealth, testAdversarial,
     // launch-readiness regression suites

@@ -111,6 +111,127 @@ async function attempt(ev, timeoutMs) {
   return { queued: true, sent: false, error: result.error };
 }
 
+/* ── Desk → website: shipping and status updates ────────────────────────────
+   The team ships and delivers orders in the Desk. The website asks the Desk what
+   changed on recent website orders and applies it, so the customer's "Track
+   order" page shows the courier and tracking number.
+
+   RULES
+     * Orders only move FORWARD. A later state on the website is never undone.
+     * Cancelling in the Desk cancels on the website only while nothing has been
+       shipped. If the customer already paid online, the payment stays recorded as
+       paid: the refund is a manual decision.
+     * A website order waiting for WhatsApp confirmation is confirmed when the Desk
+       moves it past "New".
+     * The request is signed like the order delivery, with its own prefix so a
+       signature for one purpose cannot be reused for the other.             */
+
+function pullUrl() {
+  return String(process.env.DESK_INTAKE_URL || "").trim().replace(/\/intake\/?$/, "/web-updates");
+}
+
+async function fetchUpdates(timeoutMs) {
+  const secret = String(process.env.DESK_INTAKE_SECRET).trim();
+  const since  = new Date(Date.now() - 30 * 864e5).toISOString();
+  const ts     = String(Date.now());
+  const sig    = crypto.createHmac("sha256", secret).update("desk-pull." + ts + "." + since).digest("hex");
+  const ctrl   = new AbortController();
+  const timer  = setTimeout(function () { ctrl.abort(); }, timeoutMs);
+  try {
+    const resp = await fetch(pullUrl() + "?since=" + encodeURIComponent(since), {
+      method: "GET",
+      headers: { "x-nafume-timestamp": ts, "x-nafume-signature": sig },
+      signal: ctrl.signal
+    });
+    if (!resp.ok) return { ok: false, error: "Desk answered " + resp.status };
+    const body = await resp.json().catch(function () { return null; });
+    if (!body || !Array.isArray(body.orders)) return { ok: false, error: "Desk sent an unexpected reply" };
+    return { ok: true, orders: body.orders };
+  } catch (err) {
+    return { ok: false, error: err && err.name === "AbortError" ? "Desk timed out" : "Desk unreachable" };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function validIso(v) {
+  const t = Date.parse(v);
+  return isFinite(t) && t <= Date.now() + 24 * 3600 * 1000 ? new Date(t).toISOString() : null;
+}
+
+/* applyUpdate(u) -> "applied" | "unchanged" | "skipped"   (never throws on bad data) */
+async function applyUpdate(u) {
+  const repo = require("./repo");
+  const discounts = require("./discounts");
+  if (!u || typeof u.orderId !== "string") return "skipped";
+  const order = await repo.getOrderByOrderId(u.orderId);
+  if (!order) return "skipped";
+  if (order.order_status === "cancelled") return "unchanged";
+
+  const now   = db.nowISO();
+  const patch = {};
+  const status = String(u.status || "");
+  const wasUnfulfilled = order.fulfillment_status === "unfulfilled";
+
+  // Cancelled in the Desk
+  if (status === "cancelled") {
+    if (order.fulfillment_status !== "unfulfilled") return "unchanged";     // already on its way
+    patch.order_status = "cancelled";
+    if (order.payment_status === "paid") patch.payment_note = "cancelled in the Desk; refund if needed";
+    patch.updated_at = now;
+    await db.update("orders", { where: { id: order.id }, set: patch });
+    try { await discounts.releaseRedemption(order.order_id); } catch (e) { console.error("[desk] release failed:", e && e.message); }
+    return "applied";
+  }
+
+  // WhatsApp order: the Desk moving it past "New" means staff confirmed it
+  const past = ["confirmed", "packed", "shipped", "delivered"].indexOf(status) !== -1;
+  let confirmedNow = false;
+  if (order.order_status === "awaiting_whatsapp" && past) { patch.order_status = "confirmed"; confirmedNow = true; }
+
+  // Money received outside Razorpay (COD cash, UPI arranged on WhatsApp)
+  if (u.paid === true && order.payment_status !== "paid" && order.payment_method !== "razorpay") {
+    patch.payment_status = "paid"; patch.paid_at = now;
+    patch.payment_confirmed_via = "desk"; patch.payment_note = "marked paid in the Desk";
+  }
+
+  // Shipping details
+  if (status === "shipped" || status === "delivered") {
+    const awb = typeof u.awb === "string" ? u.awb.trim().slice(0, 60) : "";
+    const courier = typeof u.courier === "string" ? u.courier.trim().slice(0, 80) : "";
+    if (awb && awb !== order.awb) patch.awb = awb;
+    if (courier && courier !== order.courier_name) patch.courier_name = courier;
+    if (!order.shipped_at) patch.shipped_at = validIso(u.shippedAt) || validIso(u.deliveredAt) || now;
+    if (wasUnfulfilled) patch.fulfillment_status = "shipped";
+  }
+  if (status === "delivered" && order.fulfillment_status !== "delivered") {
+    patch.fulfillment_status = "delivered";
+    patch.delivered_at = validIso(u.deliveredAt) || now;
+  }
+
+  if (!Object.keys(patch).length) return "unchanged";
+  patch.updated_at = now;
+  await db.update("orders", { where: { id: order.id }, set: patch });
+  if (confirmedNow) {
+    try { await discounts.markRedeemed(order.order_id); } catch (e) { console.error("[desk] redeem failed:", e && e.message); }
+  }
+  return "applied";
+}
+
+/* Asks the Desk what changed and applies it. Used by jobs/drain-desk. */
+async function pullUpdates() {
+  const summary = { fetched: 0, applied: 0, unchanged: 0, skipped: 0 };
+  if (!configured()) { summary.note = "DESK_INTAKE_URL / DESK_INTAKE_SECRET not set"; return summary; }
+  const got = await fetchUpdates(DRAIN_TIMEOUT_MS);
+  if (!got.ok) { summary.error = got.error; console.error("[desk] could not read updates -", got.error); return summary; }
+  summary.fetched = got.orders.length;
+  for (let i = 0; i < got.orders.length; i++) {
+    try { summary[await applyUpdate(got.orders[i])]++; }
+    catch (err) { summary.skipped++; console.error("[desk] update failed for", got.orders[i] && got.orders[i].orderId, err && err.message); }
+  }
+  return summary;
+}
+
 /* Retries everything still queued. Used by jobs/drain-desk. */
 async function drain(limit) {
   const summary = { scanned: 0, sent: 0, failed: 0, givenUp: 0 };
@@ -133,4 +254,4 @@ async function backlog() {
   catch (_) { return null; }
 }
 
-module.exports = { configured, queueOrder, drain, backlog, signature, MAX_ATTEMPTS };
+module.exports = { configured, queueOrder, drain, pullUpdates, applyUpdate, backlog, signature, MAX_ATTEMPTS };

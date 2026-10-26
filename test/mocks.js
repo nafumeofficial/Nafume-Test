@@ -37,6 +37,8 @@ const state = {
   resendIdempotency:     new Map(), // Idempotency-Key -> response id
   desk:                  [],        // every signed order delivery to the Desk dashboard
   deskMode:              "ok",      // "ok" | "down" (503) | "slow" (answers after the timeout)
+  deskUpdates:           [],        // what the Desk reports for GET /api/web-updates
+  deskPulls:             [],        // every pull the website made (headers + url)
   deskSlowMs:            3500
 };
 
@@ -233,6 +235,18 @@ function lastOtpFor(digits) {
 /* ── Desk dashboard (nafume-desk.pages.dev/api/intake) ─────────────────────
    Verifies the signature exactly as the real Desk does, so a wrong or missing
    signature fails here as it would in production. */
+async function deskWebUpdates(urlStr, opts) {
+  const u   = new URL(urlStr);
+  const ts  = headerOf(opts, "x-nafume-timestamp");
+  const sig = headerOf(opts, "x-nafume-signature");
+  const want = crypto.createHmac("sha256", process.env.DESK_INTAKE_SECRET || "")
+    .update("desk-pull." + ts + "." + (u.searchParams.get("since") || "")).digest("hex");
+  state.deskPulls.push({ validSignature: !!sig && sig === want, since: u.searchParams.get("since") });
+  if (state.deskMode === "down") return jsonResponse(503, { error: "down" });
+  if (!sig || sig !== want) return jsonResponse(401, { error: "Bad signature" });
+  return jsonResponse(200, { orders: state.deskUpdates });
+}
+
 async function deskIntake(urlStr, opts) {
   const raw = (opts && opts.body) || "";
   const ts  = headerOf(opts, "x-nafume-timestamp");
@@ -267,6 +281,7 @@ function install() {
     if (target.indexOf("https://api.razorpay.com") === 0)  return razorpay(target, init);
     if (target.indexOf("https://api.resend.com") === 0)    return resend(target, init);
     if (target.indexOf("https://control.msg91.com") === 0) return msg91(target, init || {});
+    if (target.indexOf("https://desk.test/api/web-updates") === 0) return deskWebUpdates(target, init || {});
     if (target.indexOf("https://desk.test/") === 0)        return deskIntake(target, init || {});
     return realFetch(input, init);
   };
@@ -289,6 +304,8 @@ function reset() {
   state.failMsg91 = false;
   state.desk.length = 0;
   state.deskMode = "ok";
+  state.deskUpdates.length = 0;
+  state.deskPulls.length = 0;
 }
 
 module.exports = {
