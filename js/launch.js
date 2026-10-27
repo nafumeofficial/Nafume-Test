@@ -833,6 +833,7 @@ function initProductPage(productId) {
         '</div>' +
         '<div class="acc-legal-links">' +
           '<a href="/pages/legal/privacy-policy.html">Privacy Policy</a>' +
+          '<a href="#" onclick="if(window.NafumeAnalytics){NafumeAnalytics.openConsent();}return false;">Cookie settings</a>' +
           '<a href="/pages/legal/terms-conditions.html">Terms &amp; Conditions</a>' +
           '<a href="/pages/legal/return-refund-policy.html">Returns Policy</a>' +
         '</div>'
@@ -3129,3 +3130,13 @@ function initCheckoutAccountUI() {
   document.addEventListener('touchcancel', clearHold, { passive: true });
 })();
 
+/* ── Analytics (consent-gated Google Analytics) ───────────────────────────────
+   Events that fire before js/commerce/analytics.js has loaded wait in this stub. */
+(function () {
+  if (window.NafumeAnalytics) return;
+  window.NafumeAnalytics = { q: [], track: function (n, p) { this.q.push([n, p]); }, openConsent: function () {} };
+  var s = document.createElement("script");
+  s.src = "/js/commerce/analytics.js";
+  s.async = true;
+  document.head.appendChild(s);
+})();

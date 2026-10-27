@@ -30,6 +30,14 @@
     whatsappNumber: "918595862227",
     checkoutType:   "whatsapp",
 
+    // ── Analytics (Google Analytics 4) — see js/commerce/analytics.js ───────
+    // Loaded only after the visitor accepts the cookie banner, and only on these
+    // hostnames, so testing and preview addresses never reach the real numbers.
+    analytics: {
+      measurementId: "G-XH88TWQ621",
+      hosts: ["www.nafume.com", "nafume.com"]
+    },
+
     // ── Pricing / shipping (mirrors js/launch.js LAUNCH_CONFIG) ─────────────
     sellingPrice:          799,
     mrp:                   1299,
