@@ -17,6 +17,9 @@
  *   checkout page opened         -> begin_checkout
  *   order placed (online / COD)  -> purchase   (once per order, with payment_type)
  *   order placed on WhatsApp     -> whatsapp_order_placed
+ *   cart opened / item removed   -> view_cart, remove_from_cart
+ *   checkout details / payment   -> add_shipping_info, add_payment_info
+ *   WhatsApp button clicked      -> whatsapp_click
  *   lead popup / quiz / account  -> generate_lead, quiz_completed, sign_up, login
  *
  * Only runs on the real site (see CONFIG.analytics.hosts), so testing and preview
@@ -242,6 +245,54 @@
     }
   }
 
+  /* ── cart and checkout steps ────────────────────────────────────────────── */
+
+  function wrapGlobal(name, before) {
+    var fn = global[name];
+    if (typeof fn !== "function" || fn.__nfGa) return;
+    var wrapped = function () {
+      try { before.apply(null, arguments); } catch (e) {}
+      return fn.apply(this, arguments);
+    };
+    wrapped.__nfGa = true;
+    global[name] = wrapped;
+  }
+  var shippingSent = false;
+  function paymentType() {
+    var r = global.document.querySelector('input[name="payment"]:checked');
+    var v = r ? String(r.value).toLowerCase() : "";
+    return v === "cod" ? "cod" : v === "whatsapp" ? "whatsapp" : "online";
+  }
+  function checkoutSteps() {
+    wrapGlobal("launchRemove", function (productId) {
+      var i = cartItems().filter(function (x) { return x.item_id === String(productId); })[0];
+      if (i) send("remove_from_cart", { currency: "INR", value: i.price * i.quantity, items: [i] });
+    });
+    wrapGlobal("openCart", function () {
+      var items = cartItems();
+      if (items.length) send("view_cart", { currency: "INR", value: valueOf(items), items: items });
+    });
+    wrapGlobal("placeOrder", function () {
+      var items = cartItems(), t = paymentType();
+      if (!items.length || shippingSent) return;
+      shippingSent = true;
+      var p = { currency: "INR", value: valueOf(items), items: items };
+      send("add_shipping_info", p);
+      p.payment_type = t; send("add_payment_info", p);
+    });
+    global.document.addEventListener("change", function (e) {
+      var t = e.target;
+      if (t && t.name === "payment") {
+        var items = cartItems();
+        send("add_payment_info", { currency: "INR", value: valueOf(items), items: items, payment_type: paymentType() });
+      }
+    });
+    global.document.addEventListener("click", function (e) {
+      var a = e.target && e.target.closest ? e.target.closest('a[href*="wa.me"], #wa-send-btn') : null;
+      if (a) send("whatsapp_click", { link_location: String(global.location.pathname) });
+    });
+  }
+
   /* ── start ──────────────────────────────────────────────────────────────── */
 
   function start() {
@@ -262,6 +313,7 @@
     early.forEach(function (e) { forward(e[0], e[1]); });
 
     pageEvents();
+    checkoutSteps();
 
     var tries = 0, timer = global.setInterval(function () {
       if (bridge() || ++tries > 60) global.clearInterval(timer);
