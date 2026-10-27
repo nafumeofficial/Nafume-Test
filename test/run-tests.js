@@ -1883,6 +1883,32 @@ async function testOrderEmails() {
 }
 
 /* ══ Forgot password ═════════════════════════════════════════════════════════ */
+async function testServerAnalytics() {
+  section("Server-side purchase tracking");
+  const ga = require("../server/_lib/analytics");
+  eq("reads the visitor id from the _ga cookie",
+     ga.clientIdFromReq({ headers: { cookie: "a=1; _ga=GA1.1.123456789.1700000000; b=2" } }), "123456789.1700000000");
+  eq("no cookie, no id", ga.clientIdFromReq({ headers: {} }), null);
+  eq("rejects a malformed cookie", ga.clientIdFromReq({ headers: { cookie: "_ga=junk" } }), null);
+
+  const realFetch = global.fetch, seen = [];
+  global.fetch = async function (url, opts) { seen.push({ url: String(url), body: opts && opts.body }); return { status: 204 }; };
+  const order = { order_id: "NF-TEST", amount_total: 799, ga_client_id: "123456789.1700000000", ga_sent_at: null };
+  const items = [{ product_id: "dark-oud", name: "Dark Oud", unit_price: 799, quantity: 1 }];
+  try {
+    delete process.env.GA_API_SECRET;
+    eq("does nothing without the secret", await ga.sendPurchase(order, items), false);
+    process.env.GA_API_SECRET = "test-secret";
+    eq("sends once configured", await ga.sendPurchase(order, items), true);
+    eq("…to Google Analytics", /google-analytics\.com\/mp\/collect/.test(seen[0].url), true);
+    const sent = JSON.parse(seen[0].body);
+    eq("…as a purchase with the order id", sent.events[0].name + ":" + sent.events[0].params.transaction_id, "purchase:NF-TEST");
+    eq("…and the order total", sent.events[0].params.value, 799);
+    eq("never twice", await ga.sendPurchase(Object.assign({}, order, { ga_sent_at: "2026-01-01" }), items), false);
+    eq("never without a visitor id", await ga.sendPurchase(Object.assign({}, order, { ga_client_id: null }), items), false);
+  } finally { global.fetch = realFetch; delete process.env.GA_API_SECRET; }
+}
+
 async function testPasswordReset() {
   section("Forgot password");
 
@@ -3566,7 +3592,7 @@ async function main() {
     testPricing, testCheckoutValidation, testHappyPath, testNormalization,
     testIdempotency, testTamperedPayments, testRazorpayOutage, testRepeatCustomer,
     testWhatsAppConsent, testAccounts, testOrderLookup, testLeads, testQuiz,
-    testDeliveryAndReviews, testWebhookRecovery, testCodDoubleSubmit, testWhatsAppOrders, testDeskSync, testDeskShippingSync, testEmailSender, testOrderEmails, testPasswordReset,
+    testDeliveryAndReviews, testWebhookRecovery, testCodDoubleSubmit, testWhatsAppOrders, testDeskSync, testDeskShippingSync, testEmailSender, testOrderEmails, testPasswordReset, testServerAnalytics,
     testDiscounts, testReconciliation, testOrderOwnership, testOutbox,
     testWhatsAppAdapter, testHealth, testAdversarial,
     // launch-readiness regression suites

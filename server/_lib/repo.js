@@ -275,6 +275,8 @@ async function createPendingOrder(input) {
     ship_country:            s.country || "India",
 
     whatsapp_opt_in:         input.whatsappOptIn === true,
+    ga_client_id:            input.gaClientId || null,
+    ga_sent_at:              null,
     notes:                   input.notes || null,
     offers:                  input.offers || [],
 

@@ -177,6 +177,7 @@ module.exports = async function handler(req, res) {
       lines:           priced.lines,
       totals:          totals,
       whatsappOptIn:   whatsappOptIn,
+      gaClientId:      require("../_lib/analytics").clientIdFromReq(req),
       notes:           notes,
       offers:          buildOfferSummary(totals)
     });

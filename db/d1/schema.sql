@@ -108,6 +108,8 @@ CREATE TABLE IF NOT EXISTS orders (
   ship_country            TEXT    NOT NULL DEFAULT 'India',
 
   whatsapp_opt_in         INTEGER NOT NULL DEFAULT 0,
+  ga_client_id            TEXT,
+  ga_sent_at              TEXT,
   notes                   TEXT,
   offers                  TEXT    NOT NULL DEFAULT '[]',
 

@@ -137,6 +137,8 @@ CREATE TABLE IF NOT EXISTS orders (
   ship_country          TEXT        NOT NULL DEFAULT 'India',
 
   whatsapp_opt_in       BOOLEAN     NOT NULL DEFAULT FALSE,
+  ga_client_id          TEXT,
+  ga_sent_at            TIMESTAMPTZ,
   notes                 TEXT,
   offers                JSONB       NOT NULL DEFAULT '[]'::jsonb,
 

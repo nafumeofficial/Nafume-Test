@@ -26,6 +26,7 @@
 const crypto    = require("crypto");
 const repo      = require("./repo");
 const messaging = require("./messaging");
+const db        = require("./db");
 
 const API_BASE   = "https://api.razorpay.com/v1";
 const TIMEOUT_MS = 8000;
@@ -132,8 +133,23 @@ async function confirmCaptured(order, payment, via, signature) {
 
   if (!result.alreadyPaid) {
     await sendPaidNotifications(result.order, via);
+    await reportPurchase(result.order);
   }
   return { order: result.order, transitioned: !result.alreadyPaid };
+}
+
+/* Tells Google Analytics about the purchase from the server (best effort), so an
+   order is counted even if the customer closed the tab before the page reported it. */
+async function reportPurchase(order) {
+  try {
+    if (!order.ga_client_id || order.ga_sent_at) return;
+    const items = await repo.getOrderItems(order.id);
+    if (await require("./analytics").sendPurchase(order, items)) {
+      await db.update("orders", { where: { id: order.id }, set: { ga_sent_at: db.nowISO() } });
+    }
+  } catch (e) {
+    console.error("[payments] GA purchase report failed:", e && e.message);
+  }
 }
 
 async function sendPaidNotifications(order, via) {
