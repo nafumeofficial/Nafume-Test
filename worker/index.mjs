@@ -167,7 +167,7 @@ export default {
     configureStorage(env);
     const secret = env.CRON_SECRET || env.ADMIN_API_TOKEN;
     // Every 10 minutes: Desk sync, then any customer emails still waiting in the outbox.
-    const jobs = event.cron === "*/10 * * * *" ? ["drain-desk", "drain-outbox"] : ["maintenance"];
+    const jobs = event.cron === "*/10 * * * *" ? ["drain-desk", "drain-outbox", "abandoned-checkout"] : ["maintenance"];
     ctx.waitUntil((async function () {
       for (const job of jobs) {
         const pathname = "/api/jobs/" + job;

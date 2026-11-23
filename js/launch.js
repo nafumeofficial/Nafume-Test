@@ -2700,6 +2700,7 @@ document.addEventListener("DOMContentLoaded", function() {
       initCheckoutUI();          // payment-method CTA, inline validation
       initCheckoutAccountUI();   // prefill from the signed-in account
       initCheckoutOffersUI();    // prepaid / gift / bundle / sample
+      initAbandonedCheckoutCapture();   // remember the cart against the email for one reminder
       // Analytics (Upgrade 10): reached checkout with items.
       if (window.OperationsService) {
         try { window.OperationsService.recordAnalyticsEvent("begin_checkout", { itemCount: launchCount() }); } catch (e) {}
@@ -2709,6 +2710,27 @@ document.addEventListener("DOMContentLoaded", function() {
 
   renderGlobalFooter();
 });
+
+/* ─── Abandoned-checkout capture ──────────────────────────────────────────────
+   Once a valid email is typed, tell the server which cart it belongs to, so one
+   reminder can go out if the order is not finished. Quiet on failure — checkout
+   never depends on it. Sent once per email per visit. */
+function initAbandonedCheckoutCapture() {
+  var emailEl = document.getElementById("cust-email");
+  if (!emailEl || !window.NafumeAPI || !window.NafumeAPI.saveCart) return;
+  var last = "";
+  function send() {
+    var email = (emailEl.value || "").trim();
+    if (!email || email === last || !emailEl.validity || !emailEl.validity.valid) return;
+    var cart = (launchCart || []).map(function (i) { return { id: i.id, qty: i.qty }; });
+    if (!cart.length) return;
+    last = email;
+    var nameEl = document.getElementById("cust-name");
+    window.NafumeAPI.saveCart(email, nameEl ? nameEl.value : "", cart).catch(function () { last = ""; });
+  }
+  emailEl.addEventListener("change", send);
+  emailEl.addEventListener("blur", send);
+}
 
 /* ─── Razorpay online payment ───────────────────────────────────────────────
    The full flow, with the security-critical parts on the server:

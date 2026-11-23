@@ -35,7 +35,8 @@ const JOBS = [
   { name: "review-requests",    load: function () { return require("./review-requests"); } },
   { name: "reconcile-payments", load: function () { return require("./reconcile-payments"); } },
   { name: "drain-outbox",       load: function () { return require("./drain-outbox"); } },
-  { name: "drain-desk",         load: function () { return require("./drain-desk"); } }
+  { name: "drain-desk",         load: function () { return require("./drain-desk"); } },
+  { name: "abandoned-checkout",  load: function () { return require("./abandoned-checkout"); } }
 ];
 
 /* Read per request; compared in constant time (see _lib/auth.js). */

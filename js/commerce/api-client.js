@@ -24,6 +24,7 @@
      lookupOrder(orderId, contact, { refreshPayment })
      me() / login() / register() / verifyAccount() / resendCode() / logout() / updateAccount()
      startIdentifierVerification() / confirmIdentifierVerification()
+     saveCart(email, name, cart)
      subscribeLead(email, meta)
      quizQuestions() / quizRecommend(answers) / quizSubmit(email, answers)
      reviewEligibility(orderId, contact) / submitReview(payload)
@@ -259,6 +260,9 @@
   function subscribeLead(email, meta) {
     return post("/api/leads/subscribe", { email: email, source: "popup_lead", meta: meta || {} });
   }
+  function saveCart(email, name, cart) {
+    return post("/api/checkout/save-cart", { email: email, name: name || "", cart: cart });
+  }
   function quizQuestions()          { return get("/api/quiz/questions"); }
   function quizRecommend(answers)   { return post("/api/quiz/recommend", { answers: answers }); }
   function quizSubmit(email, answers, optIn) {
@@ -282,6 +286,7 @@
     forgotPassword: forgotPassword, resetPassword: resetPassword,
     startIdentifierVerification: startIdentifierVerification,
     confirmIdentifierVerification: confirmIdentifierVerification,
+    saveCart: saveCart,
     subscribeLead: subscribeLead,
     quizQuestions: quizQuestions, quizRecommend: quizRecommend, quizSubmit: quizSubmit,
     reviewEligibility: reviewEligibility, submitReview: submitReview, productReviews: productReviews,

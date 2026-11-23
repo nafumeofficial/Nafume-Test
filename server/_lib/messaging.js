@@ -577,7 +577,27 @@ function passwordChangedEmail() {
   );
 }
 
+/* One reminder to someone who left checkout. `cart` is the lead's stored cart. */
+function abandonedCheckoutEmail(cart, siteUrl, unsubscribeUrl) {
+  const rows = (cart.items || []).map(function (i) {
+    return '<tr><td style="padding:4px 0;font-size:14px;">' + escapeHtml(i.name) + '</td>' +
+           '<td style="padding:4px 0;font-size:14px;text-align:right;">× ' + Number(i.quantity) + '</td></tr>';
+  }).join("");
+  return BRAND_WRAP(
+    '<h2 style="color:#111;">You left something behind</h2>' +
+    '<p style="font-size:14px;">Hi ' + escapeHtml(cart.name || "there") + ', your NAFUME cart is still waiting:</p>' +
+    '<table style="width:100%;border-collapse:collapse;margin:8px 0 4px;">' + rows + '</table>' +
+    '<p style="font-size:14px;"><strong>Total: ' + money(cart.subtotal) + '</strong> · free shipping above ₹999</p>' +
+    (siteUrl ? button(siteUrl + "/pages/order/shipping", "COMPLETE YOUR ORDER") : "") +
+    '<p style="font-size:12px;color:#777;">Stock of each fragrance is limited per batch. ' +
+    'Need help? Just reply to this email.</p>' +
+    (unsubscribeUrl ? '<p style="font-size:11px;color:#999;">This is a one-time reminder about your cart. ' +
+      '<a href="' + escapeHtml(unsubscribeUrl) + '" style="color:#999;">Stop cart reminders</a></p>' : "")
+  );
+}
+
 module.exports = {
+  abandonedCheckoutEmail,
   send, queue, deliverQueuedRow, escapeHtml, money,
   sendWhatsApp, hasWhatsAppMarketingConsent,
   emailConfigured, whatsappConfigured, whatsappReadiness,

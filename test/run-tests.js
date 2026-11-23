@@ -1909,6 +1909,79 @@ async function testServerAnalytics() {
   } finally { global.fetch = realFetch; delete process.env.GA_API_SECRET; }
 }
 
+async function testAbandonedCheckout() {
+  section("Abandoned-checkout reminder");
+
+  const cron = { Authorization: "Bearer " + process.env.CRON_SECRET };
+  const client = makeClient();
+  const mailFor = function (to) {
+    return mocks.state.emails.filter(function (m) { return [].concat(m.to || []).map(String).indexOf(to) !== -1 && /left something in your NAFUME cart/.test(m.subject || ""); });
+  };
+  const hourAgo = new Date(Date.now() - 61 * 60 * 1000).toISOString();
+  const age = async function (email) {
+    const row = await db.selectOne("leads", { email_normalized: email.toLowerCase(), source: "abandoned_checkout" });
+    await db.update("leads", { where: { id: row.id }, set: { updated_at: hourAgo, metadata: Object.assign({}, row.metadata, { savedAt: hourAgo }) } });
+    return row;
+  };
+  mocks.state.emails.length = 0;
+
+  // ── saving ──
+  const email = "abandon.one@example.com";
+  let r = await client.post("/api/checkout/save-cart", { email: email, name: "Asha", cart: [{ id: "red-spirit", qty: 2 }] });
+  eq("a cart is saved against the email", r.status, 200);
+  r = await client.post("/api/checkout/save-cart", { email: "nope", cart: [{ id: "red-spirit", qty: 1 }] });
+  eq("a bad email is refused", r.status, 400);
+  r = await client.post("/api/checkout/save-cart", { email: email, cart: [{ id: "not-a-perfume", qty: 1 }] });
+  eq("an unknown product is refused", r.status, 400);
+  let row = await db.selectOne("leads", { email_normalized: email, source: "abandoned_checkout" });
+  eq("the cart is priced by the server, not the browser", row.metadata.subtotal, 1598);
+  eq("saving the same email again keeps ONE row", (await db.select("leads", { where: { email_normalized: email, source: "abandoned_checkout" } })).length, 1);
+
+  // ── too soon ──
+  r = await api.post("/api/jobs/abandoned-checkout", {}, cron);
+  eq("the job runs with the cron secret", r.status, 200);
+  eq("nothing is sent while the cart is fresh", mailFor(email).length, 0);
+  r = await api.post("/api/jobs/abandoned-checkout", {});
+  eq("the job refuses anyone without the secret", r.status, 401);
+
+  // ── after an hour: one reminder ──
+  await age(email);
+  await api.post("/api/jobs/abandoned-checkout", {}, cron);
+  let mail = mailFor(email);
+  eq("an hour later the customer gets ONE reminder", mail.length, 1);
+  ok("…listing what they left", /Red Spirit/i.test(mail[0].html) && /× 2/.test(mail[0].html));
+  ok("…with a way back to checkout", mail[0].html.indexOf("/pages/order/shipping") !== -1);
+  ok("…and a one-click unsubscribe link", /api\/checkout\/unsubscribe\?e=/.test(mail[0].html));
+  await api.post("/api/jobs/abandoned-checkout", {}, cron);
+  eq("running the job again does not send a second one", mailFor(email).length, 1);
+
+  // ── unsubscribe ──
+  const link = /api\/checkout\/unsubscribe\?e=([^&"]+)&amp;t=([a-f0-9]+)|api\/checkout\/unsubscribe\?e=([^&"]+)&t=([a-f0-9]+)/.exec(mail[0].html);
+  const e = decodeURIComponent(link[1] || link[3]), t = link[2] || link[4];
+  r = await client.get("/api/checkout/unsubscribe?e=" + encodeURIComponent(e) + "&t=deadbeef");
+  row = await db.selectOne("leads", { email_normalized: email, source: "abandoned_checkout" });
+  ok("a wrong token changes nothing", !row.metadata.unsubscribed);
+  r = await client.get("/api/checkout/unsubscribe?e=" + encodeURIComponent(e) + "&t=" + t);
+  row = await db.selectOne("leads", { email_normalized: email, source: "abandoned_checkout" });
+  ok("the real link unsubscribes", row.metadata.unsubscribed === true);
+  r = await client.post("/api/checkout/save-cart", { email: email, cart: [{ id: "red-spirit", qty: 1 }] });
+  await age(email); mocks.state.emails.length = 0;
+  await api.post("/api/jobs/abandoned-checkout", {}, cron);
+  eq("an unsubscribed person is never emailed again", mailFor(email).length, 0);
+
+  // ── ordered in the meantime ──
+  const ship = shippingFor(750);
+  await client.post("/api/checkout/save-cart", { email: ship.email, cart: [{ id: "dark-oud", qty: 1 }] });
+  await age(ship.email);
+  r = await client.post("/api/orders/create-cod", { items: [{ id: "dark-oud", qty: 1 }], shipping: ship });
+  eq("they place the order", r.status, 200);
+  mocks.state.emails.length = 0;
+  await api.post("/api/jobs/abandoned-checkout", {}, cron);
+  eq("someone who ordered gets no reminder", mailFor(ship.email).length, 0);
+  row = await db.selectOne("leads", { email_normalized: ship.email.toLowerCase(), source: "abandoned_checkout" });
+  ok("…and the cart is marked converted", !!row.converted_at);
+}
+
 async function testPasswordReset() {
   section("Forgot password");
 
@@ -3592,7 +3665,7 @@ async function main() {
     testPricing, testCheckoutValidation, testHappyPath, testNormalization,
     testIdempotency, testTamperedPayments, testRazorpayOutage, testRepeatCustomer,
     testWhatsAppConsent, testAccounts, testOrderLookup, testLeads, testQuiz,
-    testDeliveryAndReviews, testWebhookRecovery, testCodDoubleSubmit, testWhatsAppOrders, testDeskSync, testDeskShippingSync, testEmailSender, testOrderEmails, testPasswordReset, testServerAnalytics,
+    testDeliveryAndReviews, testWebhookRecovery, testCodDoubleSubmit, testWhatsAppOrders, testDeskSync, testDeskShippingSync, testEmailSender, testOrderEmails, testPasswordReset, testServerAnalytics, testAbandonedCheckout,
     testDiscounts, testReconciliation, testOrderOwnership, testOutbox,
     testWhatsAppAdapter, testHealth, testAdversarial,
     // launch-readiness regression suites
