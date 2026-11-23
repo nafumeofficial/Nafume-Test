@@ -33,7 +33,6 @@ module.exports = async function handler(req, res) {
   } catch (err) {
     return http.handleError(res, err, "checkout/unsubscribe");
   }
-  res.statusCode = 302;
-  res.setHeader("Location", "/pages/support/unsubscribed.html");
+  res.writeHead(302, { Location: "/pages/support/unsubscribed.html" });
   res.end();
 };
