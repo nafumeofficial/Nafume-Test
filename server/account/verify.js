@@ -49,6 +49,8 @@ module.exports = async function handler(req, res) {
     const session = await auth.createSession(done.customer.id, checked.challenge.channel === "phone" ? "phone_code" : "email_code");
     auth.setSessionCookie(req, res, session.token);
 
+    await require("../_lib/order-emails").sendWelcome(done.customer);
+
     const orders = await repo.getOwnedOrders(done.customer.id, 50);
 
     const notes = [];

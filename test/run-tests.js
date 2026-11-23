@@ -1982,6 +1982,43 @@ async function testAbandonedCheckout() {
   ok("…and the cart is marked converted", !!row.converted_at);
 }
 
+async function testWelcomeAndDelivered() {
+  section("Welcome and delivered emails");
+
+  const mailFor = function (to, pattern) {
+    return mocks.state.emails.filter(function (m) {
+      return [].concat(m.to || []).map(String).indexOf(to) !== -1 && pattern.test(m.subject || "");
+    });
+  };
+  mocks.state.emails.length = 0;
+
+  // ── welcome ──
+  const d = shippingFor(760);
+  const account = { name: d.name, email: d.email, phone: d.phone, password: "GoodPass123" };
+  const owner = makeClient();
+  const reg = await registerAndVerify(owner, account);
+  eq("the account is created", reg.verify.status, 200);
+  const welcome = mailFor(d.email, /Welcome to NAFUME/);
+  eq("a new customer gets ONE welcome email", welcome.length, 1);
+  ok("…addressed to them, with a link to their account", /account/.test(welcome[0].html) && welcome[0].html.indexOf(d.name.split(" ")[0]) !== -1);
+
+  // ── delivered ──
+  const ship = shippingFor(761);
+  const client = makeClient();
+  let r = await client.post("/api/orders/create-cod", { items: [{ id: "red-spirit", qty: 1 }], shipping: ship });
+  const orderId = r.body.order.orderId;
+  const admin = { Authorization: "Bearer " + process.env.ADMIN_API_TOKEN };
+  await api.post("/api/admin/orders", { orderId: orderId, action: "mark_shipped", courier: "Delhivery", awb: "DL761" }, admin);
+  mocks.state.emails.length = 0;
+  r = await deliver(orderId, 0);
+  eq("the order is marked delivered", r.status, 200);
+  let got = mailFor(ship.email, /was delivered/);
+  eq("the customer gets a delivered email", got.length, 1);
+  ok("…naming the order", got[0].subject.indexOf(orderId) !== -1);
+  await deliver(orderId, 0);
+  eq("marking it delivered again does not email twice", mailFor(ship.email, /was delivered/).length, 1);
+}
+
 async function testPasswordReset() {
   section("Forgot password");
 
@@ -3665,7 +3702,7 @@ async function main() {
     testPricing, testCheckoutValidation, testHappyPath, testNormalization,
     testIdempotency, testTamperedPayments, testRazorpayOutage, testRepeatCustomer,
     testWhatsAppConsent, testAccounts, testOrderLookup, testLeads, testQuiz,
-    testDeliveryAndReviews, testWebhookRecovery, testCodDoubleSubmit, testWhatsAppOrders, testDeskSync, testDeskShippingSync, testEmailSender, testOrderEmails, testPasswordReset, testServerAnalytics, testAbandonedCheckout,
+    testDeliveryAndReviews, testWebhookRecovery, testCodDoubleSubmit, testWhatsAppOrders, testDeskSync, testDeskShippingSync, testEmailSender, testOrderEmails, testPasswordReset, testServerAnalytics, testAbandonedCheckout, testWelcomeAndDelivered,
     testDiscounts, testReconciliation, testOrderOwnership, testOutbox,
     testWhatsAppAdapter, testHealth, testAdversarial,
     // launch-readiness regression suites

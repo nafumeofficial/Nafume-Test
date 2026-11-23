@@ -84,4 +84,32 @@ async function sendShipped(order) {
   }
 }
 
-module.exports = { sendReceived, sendConfirmed, sendShipped };
+async function sendDelivered(order) {
+  try {
+    if (!order || !order.ship_email || !messaging.emailConfigured()) return;
+    await settle([messaging.send({
+      channel: "email", to: order.ship_email,
+      subject: "Your NAFUME order " + order.order_id + " was delivered",
+      body: messaging.orderDeliveredCustomerEmail(order, siteUrl()),
+      relatedType: "order", relatedId: order.order_id + ":delivered", dedupe: true
+    })]);
+  } catch (err) {
+    console.error("[order-emails] delivered failed:", err && err.message);
+  }
+}
+
+async function sendWelcome(customer) {
+  try {
+    if (!customer || !customer.email || !messaging.emailConfigured()) return;
+    await settle([messaging.send({
+      channel: "email", to: customer.email,
+      subject: "Welcome to NAFUME",
+      body: messaging.welcomeEmail(customer, siteUrl()),
+      relatedType: "customer", relatedId: customer.id, dedupe: true
+    })]);
+  } catch (err) {
+    console.error("[order-emails] welcome failed:", err && err.message);
+  }
+}
+
+module.exports = { sendReceived, sendConfirmed, sendShipped, sendDelivered, sendWelcome };

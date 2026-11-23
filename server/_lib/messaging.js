@@ -596,7 +596,32 @@ function abandonedCheckoutEmail(cart, siteUrl, unsubscribeUrl) {
   );
 }
 
+/* Delivered — a thank-you that also says what happens next. */
+function orderDeliveredCustomerEmail(order, siteUrl) {
+  return BRAND_WRAP(
+    '<h2 style="color:#111;">Your order has been delivered</h2>' +
+    '<p style="font-size:14px;">Hi ' + escapeHtml(order.ship_name || "there") + ', your NAFUME order ' +
+    '<strong>' + escapeHtml(order.order_id) + '</strong> was delivered. We hope you love it.</p>' +
+    '<p style="font-size:14px;">For the longest wear, spray on pulse points — wrists and neck — and don\'t rub them together.</p>' +
+    '<p style="font-size:14px;">In a few days we\'ll ask how it is working for you. Your honest review helps other people choose.</p>' +
+    (siteUrl ? button(siteUrl + "/pages/order/track-order?order=" + encodeURIComponent(order.order_id), "VIEW YOUR ORDER") : "") +
+    '<p style="font-size:13px;color:#555;">Something not right? Reply to this email and we will sort it out.</p>'
+  );
+}
+
+/* Welcome — after the account is created and verified. */
+function welcomeEmail(customer, siteUrl) {
+  return BRAND_WRAP(
+    '<h2 style="color:#111;">Welcome to NAFUME</h2>' +
+    '<p style="font-size:14px;">Hi ' + escapeHtml(customer.name || "there") + ', your account is ready.</p>' +
+    '<p style="font-size:14px;">With it you can track every order, see your order history, and check out faster next time.</p>' +
+    (siteUrl ? button(siteUrl + "/pages/account/account", "GO TO MY ACCOUNT") : "") +
+    '<p style="font-size:13px;color:#555;">Not sure which scent suits you? Take the 5-question fragrance quiz on our homepage.</p>'
+  );
+}
+
 module.exports = {
+  orderDeliveredCustomerEmail, welcomeEmail,
   abandonedCheckoutEmail,
   send, queue, deliverQueuedRow, escapeHtml, money,
   sendWhatsApp, hasWhatsAppMarketingConsent,

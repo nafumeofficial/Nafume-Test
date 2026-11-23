@@ -198,6 +198,9 @@ module.exports = async function handler(req, res) {
     if (action === "mark_shipped" && order.fulfillment_status === "unfulfilled") {
       await require("../_lib/order-emails").sendShipped(fresh);
     }
+    if (action === "mark_delivered" && order.fulfillment_status !== "delivered") {
+      await require("../_lib/order-emails").sendDelivered(fresh);
+    }
     const items   = await repo.getOrderItems(fresh.id);
 
     return http.ok(res, { order: repo.publicOrder(fresh, items) });

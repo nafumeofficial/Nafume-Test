@@ -220,6 +220,7 @@ async function applyUpdate(u) {
   const fresh = (rows && rows[0]) || order;
   if (confirmedNow) await emails.sendConfirmed(fresh);
   if (status === "shipped" && wasUnfulfilled) await emails.sendShipped(fresh);
+  if (status === "delivered" && order.fulfillment_status !== "delivered") await emails.sendDelivered(fresh);
   return "applied";
 }
 
