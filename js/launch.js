@@ -116,14 +116,13 @@ const LAUNCH_PRODUCTS = [
     fallbackRating: 4.7,
     fallbackReviewCount: 42,
     // ── Collection & merchandising fields (Upgrade 6) ──
-    collections:         ["new-launches", "best-sellers", "her", "date-night", "gifting", "discovery-set"],
+    collections:         ["new-launches", "best-sellers", "her", "date-night", "gifting"],
     primaryCollection:   "best-sellers",
     gender:              "her",
     isBestSeller:        true,
     isNewLaunch:         true,
     isGiftable:          true,
     isBundleEligible:    true,
-    isDiscoveryEligible: true,
     badges:              ["Bestseller", "Date Night Pick"]
   },
   {
@@ -168,14 +167,13 @@ const LAUNCH_PRODUCTS = [
     shopifyVariantId: null, // Replace null with real Shopify Variant / merchandise ID
     fallbackRating: 4.8, fallbackReviewCount: 57,
     // ── Collection & merchandising fields (Upgrade 6) ──
-    collections:         ["new-launches", "best-sellers", "him", "oud-intense", "date-night", "gifting", "discovery-set"],
+    collections:         ["new-launches", "best-sellers", "him", "oud-intense", "date-night", "gifting"],
     primaryCollection:   "oud-intense",
     gender:              "him",
     isBestSeller:        true,
     isNewLaunch:         true,
     isGiftable:          true,
     isBundleEligible:    true,
-    isDiscoveryEligible: true,
     badges:              ["Popular Choice", "Oud Intense"]
   },
   {
@@ -219,14 +217,13 @@ const LAUNCH_PRODUCTS = [
     shopifyVariantId: null, // Replace null with real Shopify Variant / merchandise ID
     fallbackRating: 4.6, fallbackReviewCount: 31,
     // ── Collection & merchandising fields (Upgrade 6) ──
-    collections:         ["new-launches", "him", "unisex", "date-night", "office-wear", "gifting", "discovery-set"],
+    collections:         ["new-launches", "him", "unisex", "date-night", "office-wear", "gifting"],
     primaryCollection:   "him",
     gender:              "him",
     isBestSeller:        false,
     isNewLaunch:         true,
     isGiftable:          true,
     isBundleEligible:    true,
-    isDiscoveryEligible: true,
     badges:              ["Bold Pick", "Night Out"]
   },
   {
@@ -270,14 +267,13 @@ const LAUNCH_PRODUCTS = [
     shopifyVariantId: null, // Replace null with real Shopify Variant / merchandise ID
     fallbackRating: 4.7, fallbackReviewCount: 48,
     // ── Collection & merchandising fields (Upgrade 6) ──
-    collections:         ["new-launches", "best-sellers", "him", "her", "unisex", "office-wear", "fresh-aquatic", "gifting", "discovery-set"],
+    collections:         ["new-launches", "best-sellers", "him", "her", "unisex", "office-wear", "fresh-aquatic", "gifting"],
     primaryCollection:   "fresh-aquatic",
     gender:              "unisex",
     isBestSeller:        true,
     isNewLaunch:         true,
     isGiftable:          true,
     isBundleEligible:    true,
-    isDiscoveryEligible: true,
     badges:              ["Bestseller", "Fresh Pick"]
   },
   {
@@ -321,14 +317,13 @@ const LAUNCH_PRODUCTS = [
     shopifyVariantId: null, // Replace null with real Shopify Variant / merchandise ID
     fallbackRating: 4.6, fallbackReviewCount: 29,
     // ── Collection & merchandising fields (Upgrade 6) ──
-    collections:         ["new-launches", "him", "unisex", "gifting", "discovery-set"],
+    collections:         ["new-launches", "him", "unisex", "gifting"],
     primaryCollection:   "him",
     gender:              "unisex",
     isBestSeller:        false,
     isNewLaunch:         true,
     isGiftable:          true,
     isBundleEligible:    true,
-    isDiscoveryEligible: true,
     badges:              ["Cult Favourite", "Everyday Wear"]
   }
 ];
@@ -602,7 +597,6 @@ function cartUpsellHtml() {
   return '<div class="cart-upsell-wrap">' +
     '<p class="cart-upsell-title">Complete Your Fragrance Wardrobe</p>' +
     cards +
-    '<a href="/pages/collections/collection.html?collection=discovery-set" class="cart-discovery-cta" onclick="closeCart()">Not sure? Try the Discovery Set first →</a>' +
   '</div>';
 }
 
@@ -1028,7 +1022,7 @@ function initProductPage(productId) {
   if (othersEl) {
     var sameCollection = LAUNCH_PRODUCTS.filter(function(x) {
       return x.id !== productId && p.collections && x.collections &&
-             p.collections.some(function(c) { return x.collections.indexOf(c) > -1 && c !== "new-launches" && c !== "gifting" && c !== "discovery-set"; });
+             p.collections.some(function(c) { return x.collections.indexOf(c) > -1 && c !== "new-launches" && c !== "gifting"; });
     });
     var others = sameCollection.length
       ? sameCollection
@@ -1232,7 +1226,6 @@ function renderProductPairings(p) {
       '<h2 class="pdp-pairings-title">Pairs Well With · Make It a Bundle</h2>' +
       '<p class="pdp-pairings-sub">Build your fragrance wardrobe — add any 3 × 50ml to unlock our bundle offer.</p>' +
       '<div class="other-grid">' + cards + '</div>' +
-      '<a href="/pages/collections/collection.html?collection=discovery-set" class="pdp-discovery-cta">Not sure? Try the Discovery Set first →</a>' +
     '</div>';
   anchor.parentNode.insertBefore(section, anchor);
 }

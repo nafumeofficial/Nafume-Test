@@ -6,7 +6,7 @@
     <link rel="apple-touch-icon" href="/assets/logo/logo-mark.png"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>All Perfume Collections — NAFUME Artisan Luxe</title>
-  <meta name="description" content="Explore NAFUME fragrance collections — best sellers, for him, for her, office wear, date night, fresh &amp; aquatic, oud, gifting and discovery sets."/>
+  <meta name="description" content="Explore NAFUME fragrance collections — best sellers, for him, for her, office wear, date night, fresh &amp; aquatic, oud, and gifting."/>
   <link rel="canonical" href="https://www.nafume.com/pages/collections/collections"/>
   <meta property="og:type" content="website"/>
   <meta property="og:site_name" content="NAFUME Artisan Luxe"/>
@@ -142,7 +142,6 @@
     var coverProductId = {
       'new-launches':       'aqua-manthan',
       'best-sellers':       'seduction',
-      'discovery-set':      'all-day-misfit',
       'him':                'dark-oud',
       'her':                'seduction',
       'unisex':             'aqua-manthan',
@@ -203,8 +202,7 @@
     var html = '';
     html += renderGroup('Shop by Popularity', [
       cs.getCollectionBySlug('new-launches'),
-      cs.getCollectionBySlug('best-sellers'),
-      cs.getCollectionBySlug('discovery-set')
+      cs.getCollectionBySlug('best-sellers')
     ].filter(Boolean));
     html += renderGroup('Shop by Gender', cs.getGenderCollections());
     html += renderGroup('Shop by Occasion', cs.getOccasionCollections());

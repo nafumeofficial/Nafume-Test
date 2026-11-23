@@ -2478,11 +2478,6 @@ body.has-bar { padding-bottom: 0; }
   transition: background 0.15s, color 0.15s;
 }
 .cart-upsell-add:hover { background: #111; color: #fff; }
-.cart-discovery-cta {
-  display: block; margin-top: 12px; font-size: 12px; color: #555;
-  text-decoration: underline; text-align: center;
-}
-.cart-discovery-cta:hover { color: #C5A059; }
 
 /* Checkout: offer rows + extras */
 .order-row-offer { display: flex; justify-content: space-between; font-size: 13px; color: #555; padding: 2px 0; }
@@ -2546,11 +2541,6 @@ body.has-bar { padding-bottom: 0; }
   color: #555; text-decoration: underline; text-underline-offset: 2px;
 }
 .pairing-view:hover { color: #C5A059; }
-.pdp-discovery-cta {
-  display: inline-block; margin-top: 22px; font-size: 13px; color: #555;
-  text-decoration: underline; text-underline-offset: 2px;
-}
-.pdp-discovery-cta:hover { color: #C5A059; }
 
 /* BYOB savings line */
 .byob-bundle-note {
@@ -3753,10 +3743,6 @@ body.nf-lead-open { overflow: hidden; }
   padding: 6px 10px;
 }
 
-.cart-discovery-cta {
-  min-height: 44px;
-  display: flex !important; align-items: center; justify-content: center;
-}
 /* ── Promo code field (checkout) ─────────────────────────────── */
 
 .promo-row { display: flex; gap: 8px; align-items: stretch; }

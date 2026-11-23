@@ -70,7 +70,7 @@
     collections: {
       path: "/pages/collections/collections",
       title: "All Perfume Collections — NAFUME Artisan Luxe",
-      description: "Explore NAFUME fragrance collections — best sellers, for him, for her, office wear, date night, fresh & aquatic, oud, gifting and discovery sets."
+      description: "Explore NAFUME fragrance collections — best sellers, for him, for her, office wear, date night, fresh & aquatic, oud, and gifting."
     },
     gifting: {
       path: "/pages/collections/gifting",

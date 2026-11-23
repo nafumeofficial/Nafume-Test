@@ -170,22 +170,6 @@
       ]
     },
     {
-      slug:        "discovery-set",
-      title:       "Discovery Set",
-      subtitle:    "Try the full NAFUME range",
-      description: "Explore the complete NAFUME collection — all 5 fragrances, each a distinct personality. The perfect way to discover your signature scent or gift someone the choice.",
-      badge:       "Explore",
-      type:        "discovery",
-      sortOrder:   11,
-      icon:        "🔍",
-      seoTitle:    "Perfume Discovery Set — NAFUME Artisan Luxe",
-      seoDescription: "Discover all 5 NAFUME fragrances. Fresh, oud, floral, spicy, and gourmand Eau De Parfum — find your signature scent.",
-      faqItems: [
-        { q: "What is a discovery set?", a: "A discovery set lets you explore all available fragrances to find your perfect match before committing to a favourite." },
-        { q: "How can I order multiple fragrances?", a: "Add your chosen fragrances to cart and order via WhatsApp. Or use our Build Your Box page to choose up to 3 fragrances." }
-      ]
-    },
-    {
       slug:        "bundles",
       title:       "Bundles",
       subtitle:    "Save more when you buy together",
@@ -278,7 +262,6 @@
     if (!col) return [];
     // Virtual types just return all eligible products
     if (col.type === "bundle") return window.LAUNCH_PRODUCTS.filter(function(p) { return p.isBundleEligible; });
-    if (col.type === "discovery") return window.LAUNCH_PRODUCTS.filter(function(p) { return p.isDiscoveryEligible; });
     if (col.type === "gifting") return window.LAUNCH_PRODUCTS.filter(function(p) { return p.isGiftable; });
     return window.LAUNCH_PRODUCTS.filter(function(p) {
       return p.collections && p.collections.indexOf(slug) > -1;
@@ -334,7 +317,7 @@
     "new-launches": {
       seoContentTitle: "About NAFUME New Launches",
       seoContentBody: "Our new launch range is the complete NAFUME debut — five Eau De Parfum fragrances, each with its own personality. If you are new to the brand, this is the best place to start: explore a fresh aquatic, a deep oud, a warm floral, a spicy aromatic and a sweet gourmand, all crafted for Indian weather and everyday wear. Add your favourite to cart and confirm your order on WhatsApp.",
-      relatedCollections: ["best-sellers", "discovery-set", "gifting"]
+      relatedCollections: ["best-sellers", "gifting"]
     },
     "best-sellers": {
       seoContentTitle: "Why These Are Our Best Sellers",
@@ -378,13 +361,8 @@
     },
     "gifting": {
       seoContentTitle: "Perfume Gifting Made Simple",
-      seoContentBody: "A fragrance is a thoughtful, personal gift. Every NAFUME perfume comes in premium packaging suitable for birthdays, anniversaries, Diwali, weddings and corporate gifting. If you are unsure of the recipient's taste, a best seller or a discovery set is a safe, well-loved choice — or build a custom box with up to three fragrances.",
-      relatedCollections: ["best-sellers", "discovery-set", "build-your-own-box"]
-    },
-    "discovery-set": {
-      seoContentTitle: "Discover Your Signature Scent",
-      seoContentBody: "Not sure which fragrance is right for you? Exploring the full range is the best way to find your signature. Each NAFUME perfume is a distinct personality — fresh, oud, floral, spicy and gourmand — so you can compare and choose with confidence, or gift someone the joy of choosing their own.",
-      relatedCollections: ["new-launches", "best-sellers", "build-your-own-box"]
+      seoContentBody: "A fragrance is a thoughtful, personal gift. Every NAFUME perfume comes in premium packaging suitable for birthdays, anniversaries, Diwali, weddings and corporate gifting. If you are unsure of the recipient's taste, a best seller is a safe, well-loved choice — or build a custom box with up to three fragrances.",
+      relatedCollections: ["best-sellers", "build-your-own-box"]
     },
     "bundles": {
       seoContentTitle: "Save More With Perfume Bundles",
@@ -394,7 +372,7 @@
     "build-your-own-box": {
       seoContentTitle: "Build a Box That's Truly Yours",
       seoContentBody: "Choose up to three NAFUME fragrances and we'll confirm your custom box on WhatsApp. It's the easiest way to cover different moods and occasions in one order, or to create a one-of-a-kind gift. Mix fresh, oud, floral and gourmand scents however you like.",
-      relatedCollections: ["gifting", "discovery-set", "best-sellers"]
+      relatedCollections: ["gifting", "best-sellers"]
     }
   };
 
