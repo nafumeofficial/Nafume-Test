@@ -1411,7 +1411,16 @@
             if (!modal || !videoEl) return;
 
             var cur    = 0;
-            var isMuted = true;
+            // The visitor's sound choice is remembered, so it is not asked again on
+            // every video. Opening a video is a deliberate tap, so sound starts ON
+            // unless they muted it earlier.
+            function readMuted() {
+                try { return window.localStorage.getItem('nafume_wb_muted') === '1'; } catch (e) { return false; }
+            }
+            var isMuted = readMuted();
+            function rememberMuted() {
+                try { window.localStorage.setItem('nafume_wb_muted', isMuted ? '1' : '0'); } catch (e) {}
+            }
             var MUTED_SVG = '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/>';
             var SOUND_SVG = '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>';
 
@@ -1421,13 +1430,21 @@
 
             function loadSlide(index) {
                 var d = WB_DATA[index];
-                videoEl.muted = true;
-                isMuted = true;
+                isMuted = readMuted();
+                videoEl.muted = isMuted;
                 updateMuteIcon();
                 videoEl.poster = d.poster;
                 videoEl.src = d.src;
                 videoEl.load();
-                videoEl.play().catch(function () {});
+                videoEl.play().catch(function () {
+                    // The browser refused to start it with sound: play it muted
+                    // rather than not at all, and show the sound-off icon. This
+                    // does not overwrite the saved choice.
+                    videoEl.muted = true;
+                    isMuted = true;
+                    updateMuteIcon();
+                    videoEl.play().catch(function () {});
+                });
                 prodLink.href = d.slug;
                 prodThumb.src = d.thumb;
                 prodThumb.alt = d.name;
@@ -1480,6 +1497,7 @@
                 e.stopPropagation();
                 isMuted = !isMuted;
                 videoEl.muted = isMuted;
+                rememberMuted();
                 updateMuteIcon();
             });
             atcBtn.addEventListener('click', function (e) {
