@@ -1,0 +1,58 @@
+/* css/typography.css — type hierarchy
+ * ============================================================================
+ * Loaded after style.css / launch.css on every page so it wins ties.
+ *
+ *   1. Perfume names   Stevie Sans Bold, uppercase, larger — the first thing read.
+ *   2. Section headings  Acumin Wide (the brand face) with a touch more weight.
+ *      Acumin ships in one weight only, so a hairline stroke adds weight cleanly
+ *      instead of the browser faking a bold.
+ *   3. Supporting text (families, subtitles) stays light and quiet.
+ */
+
+/* 1 ── Perfume names */
+.home-product-title,
+.prod-card-name,
+.launch-grid .prod-card-name,
+.coll-card-title,
+.watch-product-name,
+.wb-prod-name,
+.cart-upsell-name,
+.pdp-buy-bar-name {
+  font-family: var(--font-body);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #000;
+}
+.home-product-title,
+.prod-card-name,
+.launch-grid .prod-card-name { font-size: clamp(14px, 1.25vw, 16px); line-height: 1.25; }
+
+/* Product page title */
+.product-name,
+.pdp-info h1,
+main h1.product-name {
+  font-family: var(--font-body);
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  line-height: 1.1;
+}
+
+/* 2 ── Section headings */
+.home-section-title,
+.other-launches-title,
+.pdp-pairings-title,
+.coll-group-title,
+.mood-title,
+.nf-faq-title,
+.nf-quiz-teaser-title,
+.instagram-title {
+  -webkit-text-stroke: 0.6px currentColor;
+  letter-spacing: 0.12em;
+}
+.home-section-title { font-size: clamp(28px, 3.8vw, 46px); }
+
+/* 3 ── Supporting text */
+.home-product-family,
+.home-section-subtitle { font-weight: 300; }
